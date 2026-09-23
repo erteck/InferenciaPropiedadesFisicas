@@ -1,0 +1,35 @@
+ingest:
+  catalog: Datos/listado_Katachi_MaNGA_DR17_coordenadas_oficiales.csv
+  labels: Datos/color_morp.csv
+  survey: desi-legacy-dr10
+  bands: [g, r, z]
+  pixscale_arcsec: 0.262
+  size_px: 256
+  limit: 0
+  local_fits: [Datos/UNET]
+
+cutout:
+  radius_arcsec: 240.0
+  center: catalog
+
+normalize:
+  method: asinh
+  softening: 0.02
+  clip_percentile: 99.5
+  per_band: true
+
+segment:
+  method: threshold
+  sigma: 3.0
+  min_area_px: 25
+
+structure:
+  maps: [asymmetry, clumpiness]
+
+split:
+  seed: 42
+  fractions:
+    train: 0.70
+    val: 0.15
+    test: 0.15
+  stratify_by: T_11

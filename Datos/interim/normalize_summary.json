@@ -1,0 +1,14 @@
+{
+  "images": {
+    "m51": {
+      "mean": 0.5832590907950858,
+      "std": 0.25088093100680303
+    }
+  },
+  "params": {
+    "clip_percentile": 99.5,
+    "method": "asinh",
+    "per_band": true,
+    "softening": 0.02
+  }
+}

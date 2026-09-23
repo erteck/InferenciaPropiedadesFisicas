@@ -1,0 +1,263 @@
+schema: '2.0'
+stages:
+  ingest:
+    cmd: python -m src.data.ingest
+    deps:
+    - path: Datos/UNET
+      hash: md5
+      md5: 727c6e990e944c42b79c065e0908cca3.dir
+      size: 5402880
+      nfiles: 2
+    - path: Datos/color_morp.csv
+      hash: md5
+      md5: aedc6429170fb0e10bcee61efebc12cd
+      size: 797801
+    - path: Datos/listado_Katachi_MaNGA_DR17_coordenadas_oficiales.csv
+      hash: md5
+      md5: 966f021566e450d7d844df73cd73148c
+      size: 360615
+    - path: src/data/common.py
+      hash: md5
+      md5: 10dbdc9af021b92cf87485c28a8ec525
+      size: 699
+    - path: src/data/ingest.py
+      hash: md5
+      md5: 316616500cf658168df0d8810f558ba7
+      size: 2430
+    params:
+      params.yaml:
+        ingest:
+          catalog: Datos/listado_Katachi_MaNGA_DR17_coordenadas_oficiales.csv
+          labels: Datos/color_morp.csv
+          survey: desi-legacy-dr10
+          bands:
+          - g
+          - r
+          - z
+          pixscale_arcsec: 0.262
+          size_px: 256
+          limit: 0
+          local_fits:
+          - Datos/UNET
+    outs:
+    - path: Datos/raw/fits
+      hash: md5
+      md5: 1ebf6b1c0005cd5d3e32ca6e84d60670.dir
+      size: 1650240
+      nfiles: 1
+    - path: Datos/raw/ingest_summary.json
+      hash: md5
+      md5: d5715bf04fef140edf4cc2459f597357
+      size: 62
+    - path: Datos/raw/manifest.csv
+      hash: md5
+      md5: c01f88f5bceef7ea13470448241241e8
+      size: 2387074
+  cutout:
+    cmd: python -m src.data.cutout
+    deps:
+    - path: Datos/raw/fits
+      hash: md5
+      md5: 1ebf6b1c0005cd5d3e32ca6e84d60670.dir
+      size: 1650240
+      nfiles: 1
+    - path: src/data/common.py
+      hash: md5
+      md5: 10dbdc9af021b92cf87485c28a8ec525
+      size: 699
+    - path: src/data/cutout.py
+      hash: md5
+      md5: ad725bc4e3c511fc4e7d0a412e89e3f2
+      size: 2259
+    params:
+      params.yaml:
+        cutout:
+          radius_arcsec: 240.0
+          center: catalog
+        ingest.pixscale_arcsec: 0.262
+    outs:
+    - path: Datos/interim/cutout_summary.json
+      hash: md5
+      md5: af521c02ef0177a0c29a5641091b6782
+      size: 40
+    - path: Datos/interim/cutouts
+      hash: md5
+      md5: dcd79f000da42b3441f11c2f8bf33444.dir
+      size: 921600
+      nfiles: 1
+  normalize:
+    cmd: python -m src.data.normalize
+    deps:
+    - path: Datos/interim/cutouts
+      hash: md5
+      md5: dcd79f000da42b3441f11c2f8bf33444.dir
+      size: 921600
+      nfiles: 1
+    - path: src/data/common.py
+      hash: md5
+      md5: 10dbdc9af021b92cf87485c28a8ec525
+      size: 699
+    - path: src/data/normalize.py
+      hash: md5
+      md5: 74b4b50dfc0a750aae9a1729511144c6
+      size: 1530
+    params:
+      params.yaml:
+        normalize:
+          method: asinh
+          softening: 0.02
+          clip_percentile: 99.5
+          per_band: true
+    outs:
+    - path: Datos/interim/normalize_summary.json
+      hash: md5
+      md5: 0eba2f546a79f9fcd1c73a5e8bdfa737
+      size: 222
+    - path: Datos/interim/normalized
+      hash: md5
+      md5: 6fdafa3cb160b18dda7b6947974d0282.dir
+      size: 1812736
+      nfiles: 1
+  segment:
+    cmd: python -m src.data.segment
+    deps:
+    - path: Datos/interim/cutouts
+      hash: md5
+      md5: dcd79f000da42b3441f11c2f8bf33444.dir
+      size: 921600
+      nfiles: 1
+    - path: src/data/common.py
+      hash: md5
+      md5: 10dbdc9af021b92cf87485c28a8ec525
+      size: 699
+    - path: src/data/segment.py
+      hash: md5
+      md5: 23866ff8d4292de9c85efe14d5a305fe
+      size: 2256
+    params:
+      params.yaml:
+        segment:
+          method: threshold
+          sigma: 3.0
+          min_area_px: 25
+    outs:
+    - path: Datos/interim/masks
+      hash: md5
+      md5: 4614b1b91ee9d3aec56d888eb4f2a68d.dir
+      size: 226704
+      nfiles: 1
+    - path: Datos/interim/segment_summary.json
+      hash: md5
+      md5: b2449c067eb952b7fdbabd5eb25333e8
+      size: 144
+  structure:
+    cmd: python -m src.data.structure
+    deps:
+    - path: Datos/interim/masks
+      hash: md5
+      md5: 4614b1b91ee9d3aec56d888eb4f2a68d.dir
+      size: 226704
+      nfiles: 1
+    - path: Datos/interim/normalized
+      hash: md5
+      md5: 6fdafa3cb160b18dda7b6947974d0282.dir
+      size: 1812736
+      nfiles: 1
+    - path: src/data/common.py
+      hash: md5
+      md5: 10dbdc9af021b92cf87485c28a8ec525
+      size: 699
+    - path: src/data/structure.py
+      hash: md5
+      md5: 647d362dbf3f1e73b84f6931e4f46f46
+      size: 1589
+    params:
+      params.yaml:
+        structure:
+          maps:
+          - asymmetry
+          - clumpiness
+    outs:
+    - path: Datos/interim/structure_maps
+      hash: md5
+      md5: edb3bd84895984d322621499b4597c1b.dir
+      size: 1257210
+      nfiles: 1
+    - path: Datos/interim/structure_summary.json
+      hash: md5
+      md5: 2b277a53ca711e456229be75fc0162c0
+      size: 200
+  split:
+    cmd: python -m src.data.split
+    deps:
+    - path: Datos/interim/masks
+      hash: md5
+      md5: 4614b1b91ee9d3aec56d888eb4f2a68d.dir
+      size: 226704
+      nfiles: 1
+    - path: Datos/interim/normalized
+      hash: md5
+      md5: 6fdafa3cb160b18dda7b6947974d0282.dir
+      size: 1812736
+      nfiles: 1
+    - path: Datos/interim/structure_maps
+      hash: md5
+      md5: edb3bd84895984d322621499b4597c1b.dir
+      size: 1257210
+      nfiles: 1
+    - path: Datos/raw/manifest.csv
+      hash: md5
+      md5: c01f88f5bceef7ea13470448241241e8
+      size: 2387074
+    - path: src/data/common.py
+      hash: md5
+      md5: 10dbdc9af021b92cf87485c28a8ec525
+      size: 699
+    - path: src/data/split.py
+      hash: md5
+      md5: 1cffc6020a58d29b4333b7824ab8977e
+      size: 3721
+    params:
+      params.yaml:
+        split:
+          seed: 42
+          fractions:
+            train: 0.7
+            val: 0.15
+            test: 0.15
+          stratify_by: T_11
+        structure.maps:
+        - asymmetry
+        - clumpiness
+    outs:
+    - path: Datos/processed/test.zarr
+      hash: md5
+      md5: fbca1c2367d4dc8c960a561481e7ce02.dir
+      size: 38
+      nfiles: 2
+    - path: Datos/processed/train.zarr
+      hash: md5
+      md5: 7b9f71011bd79b6087f4912fe17c2f76.dir
+      size: 1533466
+      nfiles: 22
+    - path: Datos/processed/val.zarr
+      hash: md5
+      md5: fbca1c2367d4dc8c960a561481e7ce02.dir
+      size: 38
+      nfiles: 2
+    - path: Datos/splits/split_summary.json
+      hash: md5
+      md5: d48c84fde4567234412190a22c452028
+      size: 210
+    - path: Datos/splits/test.csv
+      hash: md5
+      md5: 49f96038f20aa062772267b640a18d79
+      size: 3
+    - path: Datos/splits/train.csv
+      hash: md5
+      md5: 5fc2dc4e3ad3351ce1578164a0ce0491
+      size: 7
+    - path: Datos/splits/val.csv
+      hash: md5
+      md5: 49f96038f20aa062772267b640a18d79
+      size: 3

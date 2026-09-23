@@ -1,0 +1,16 @@
+{
+  "counts": {
+    "test": 0,
+    "train": 1,
+    "val": 0
+  },
+  "params": {
+    "fractions": {
+      "test": 0.15,
+      "train": 0.7,
+      "val": 0.15
+    },
+    "seed": 42,
+    "stratify_by": "T_11"
+  }
+}

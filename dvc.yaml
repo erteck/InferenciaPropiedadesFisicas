@@ -1,0 +1,98 @@
+stages:
+  ingest:
+    cmd: python -m src.data.ingest
+    deps:
+      - src/data/common.py
+      - src/data/ingest.py
+      - Datos/listado_Katachi_MaNGA_DR17_coordenadas_oficiales.csv
+      - Datos/color_morp.csv
+      - Datos/UNET
+    params:
+      - ingest
+    outs:
+      - Datos/raw/manifest.csv
+      - Datos/raw/fits
+    metrics:
+      - Datos/raw/ingest_summary.json:
+          cache: false
+
+  cutout:
+    cmd: python -m src.data.cutout
+    deps:
+      - src/data/common.py
+      - src/data/cutout.py
+      - Datos/raw/fits
+    params:
+      - cutout
+      - ingest.pixscale_arcsec
+    outs:
+      - Datos/interim/cutouts
+    metrics:
+      - Datos/interim/cutout_summary.json:
+          cache: false
+
+  normalize:
+    cmd: python -m src.data.normalize
+    deps:
+      - src/data/common.py
+      - src/data/normalize.py
+      - Datos/interim/cutouts
+    params:
+      - normalize
+    outs:
+      - Datos/interim/normalized
+    metrics:
+      - Datos/interim/normalize_summary.json:
+          cache: false
+
+  segment:
+    cmd: python -m src.data.segment
+    deps:
+      - src/data/common.py
+      - src/data/segment.py
+      - Datos/interim/cutouts
+    params:
+      - segment
+    outs:
+      - Datos/interim/masks
+    metrics:
+      - Datos/interim/segment_summary.json:
+          cache: false
+
+  structure:
+    cmd: python -m src.data.structure
+    deps:
+      - src/data/common.py
+      - src/data/structure.py
+      - Datos/interim/normalized
+      - Datos/interim/masks
+    params:
+      - structure
+    outs:
+      - Datos/interim/structure_maps
+    metrics:
+      - Datos/interim/structure_summary.json:
+          cache: false
+
+  split:
+    cmd: python -m src.data.split
+    deps:
+      - src/data/common.py
+      - src/data/split.py
+      - Datos/raw/manifest.csv
+      - Datos/interim/normalized
+      - Datos/interim/masks
+      - Datos/interim/structure_maps
+    params:
+      - split
+      - structure.maps
+    outs:
+      - Datos/processed/train.zarr
+      - Datos/processed/val.zarr
+      - Datos/processed/test.zarr
+      - Datos/splits/train.csv
+      - Datos/splits/val.csv
+      - Datos/splits/test.csv
+    metrics:
+      - Datos/splits/split_summary.json:
+          cache: false

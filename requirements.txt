@@ -1,0 +1,20 @@
+# Dependencias mínimas del pipeline de datos.
+# Instalación: python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+# (equivalente conda: conda env create -f environment.yml)
+
+# Versionado de datos y pipeline
+dvc>=3.50
+
+# Ciencia de datos / astronomía
+numpy>=1.26
+pandas>=2.1
+astropy>=6.0
+scipy>=1.11
+pyyaml>=6.0
+
+# Formato de salida de los cubos de entrenamiento
+zarr>=2.17,<3
+numcodecs>=0.12
+
+# Notebooks
+jupyterlab>=4.0

@@ -1,0 +1,10 @@
+{
+  "mask_fraction": {
+    "m51": 0.5175526092790057
+  },
+  "params": {
+    "method": "threshold",
+    "min_area_px": 25,
+    "sigma": 3.0
+  }
+}

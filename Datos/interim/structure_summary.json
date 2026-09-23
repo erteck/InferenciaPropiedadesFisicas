@@ -1,0 +1,14 @@
+{
+  "params": {
+    "maps": [
+      "asymmetry",
+      "clumpiness"
+    ]
+  },
+  "scalars": {
+    "m51": {
+      "asymmetry": 0.08483321263610957,
+      "clumpiness": 0.0059611456106476585
+    }
+  }
+}

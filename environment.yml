@@ -1,0 +1,16 @@
+name: ipf
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy>=1.26
+  - pandas>=2.1
+  - astropy>=6.0
+  - scipy>=1.11
+  - pyyaml>=6.0
+  - zarr>=2.17,<3
+  - numcodecs>=0.12
+  - jupyterlab>=4.0
+  - pip
+  - pip:
+      - dvc>=3.50
