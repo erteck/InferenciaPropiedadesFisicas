@@ -75,13 +75,23 @@ México.
 ```
 InferenciaPropiedadesFisicas/
 ├── README.md              ← Este archivo
-├── Datos/                 ← Datos utilizados en el proyecto
+├── requirements.txt       ← Dependencias (pip); environment.yml para conda
+├── dvc.yaml               ← Pipeline de preprocesamiento (etapas DVC)
+├── params.yaml            ← Parámetros de cada etapa
+├── dvc.lock               ← Hashes de datos por versión (generado por DVC)
+├── src/
+│   └── data/              ← Código de las etapas del pipeline
+├── Datos/                 ← Datos utilizados en el proyecto (ver Datos/README.md)
 │   ├── color_morp.csv
 │   ├── listado_Katachi_MaNGA_DR17_coordenadas_oficiales.csv
 │   ├── metricas_cross_target.csv
-│   └── UNET/              ← Imágenes FITS para experimentos con U-Net
-│       ├── m51.fits
-│       └── SSDS_M51.fits
+│   ├── UNET/              ← Imágenes FITS para experimentos con U-Net
+│   │   ├── m51.fits
+│   │   └── SSDS_M51.fits
+│   ├── raw/               ← Manifiesto e imágenes crudas (DVC)
+│   ├── interim/           ← Recortes, normalizados, máscaras, mapas (DVC)
+│   ├── processed/         ← Cubos Zarr train/val/test (DVC)
+│   └── splits/            ← Particiones fijas (DVC)
 ├── Notebooks/             ← Análisis, experimentación y desarrollo
 │   ├── Katachi_Comparacion_Masas_Pipe3D_Taylor_NSA (1).ipynb
 │   ├── Katachi_Entrenamiento_Taylor_NoTrain.ipynb
@@ -108,9 +118,13 @@ InferenciaPropiedadesFisicas/
 - **Datos/** — Conjuntos de datos utilizados en el proyecto: catálogos en
   CSV (coordenadas oficiales del listado Katachi–MaNGA DR17, métricas
   cruzadas, color y morfología) e imágenes en formato FITS empleadas en los
-  experimentos con U-Net. Si en el futuro algún dataset resulta demasiado
-  pesado para el repositorio, se documentará aquí su origen y forma de
-  acceso en lugar de incluirse.
+  experimentos con U-Net. Los datos derivados del preprocesamiento
+  (`raw/`, `interim/`, `processed/`, `splits/`) se versionan con DVC y no
+  entran en git; cada commit o tag `dataset/vX.Y` identifica una versión
+  exacta del dataset. El flujo completo está en `Datos/README.md`.
+- **src/data/** — Etapas del pipeline de datos (`ingest`, `cutout`,
+  `normalize`, `segment`, `structure`, `split`), orquestadas por `dvc.yaml`
+  y parametrizadas en `params.yaml`.
 - **Notebooks/** — Notebooks de Jupyter para análisis, experimentación y
   desarrollo del proyecto. Incluye los notebooks principales del análisis
   Katachi/Taylor/Pipe3D, la subcarpeta `UNET/` con experimentos de
