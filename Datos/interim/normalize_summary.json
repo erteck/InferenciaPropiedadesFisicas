@@ -1,13 +1,13 @@
 {
   "images": {
     "m51": {
-      "mean": 0.5832590907950858,
-      "std": 0.25088093100680303
+      "mean": 0.5535358541820186,
+      "std": 0.25147761512389327
     }
   },
   "params": {
     "clip_percentile": 99.5,
-    "method": "asinh",
+    "method": "log",
     "per_band": true,
     "softening": 0.02
   }

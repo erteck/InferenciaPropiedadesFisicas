@@ -13,7 +13,7 @@ cutout:
   center: catalog
 
 normalize:
-  method: asinh
+  method: log
   softening: 0.02
   clip_percentile: 99.5
   per_band: true

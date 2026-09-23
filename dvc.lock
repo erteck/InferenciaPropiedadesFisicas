@@ -104,18 +104,18 @@ stages:
     params:
       params.yaml:
         normalize:
-          method: asinh
+          method: log
           softening: 0.02
           clip_percentile: 99.5
           per_band: true
     outs:
     - path: Datos/interim/normalize_summary.json
       hash: md5
-      md5: 0eba2f546a79f9fcd1c73a5e8bdfa737
-      size: 222
+      md5: 5e8ebaf895ad5b35bc918c7734ca0c8c
+      size: 220
     - path: Datos/interim/normalized
       hash: md5
-      md5: 6fdafa3cb160b18dda7b6947974d0282.dir
+      md5: baac0da883ae94cf36d42f3ac5be56d4.dir
       size: 1812736
       nfiles: 1
   segment:
@@ -160,7 +160,7 @@ stages:
       nfiles: 1
     - path: Datos/interim/normalized
       hash: md5
-      md5: 6fdafa3cb160b18dda7b6947974d0282.dir
+      md5: baac0da883ae94cf36d42f3ac5be56d4.dir
       size: 1812736
       nfiles: 1
     - path: src/data/common.py
@@ -180,13 +180,13 @@ stages:
     outs:
     - path: Datos/interim/structure_maps
       hash: md5
-      md5: edb3bd84895984d322621499b4597c1b.dir
-      size: 1257210
+      md5: 395105804c02be2cefdfab3518393639.dir
+      size: 1257695
       nfiles: 1
     - path: Datos/interim/structure_summary.json
       hash: md5
-      md5: 2b277a53ca711e456229be75fc0162c0
-      size: 200
+      md5: 75d098d7b13e92343cace65133cd98f7
+      size: 199
   split:
     cmd: python -m src.data.split
     deps:
@@ -197,13 +197,13 @@ stages:
       nfiles: 1
     - path: Datos/interim/normalized
       hash: md5
-      md5: 6fdafa3cb160b18dda7b6947974d0282.dir
+      md5: baac0da883ae94cf36d42f3ac5be56d4.dir
       size: 1812736
       nfiles: 1
     - path: Datos/interim/structure_maps
       hash: md5
-      md5: edb3bd84895984d322621499b4597c1b.dir
-      size: 1257210
+      md5: 395105804c02be2cefdfab3518393639.dir
+      size: 1257695
       nfiles: 1
     - path: Datos/raw/manifest.csv
       hash: md5
@@ -237,8 +237,8 @@ stages:
       nfiles: 2
     - path: Datos/processed/train.zarr
       hash: md5
-      md5: 7b9f71011bd79b6087f4912fe17c2f76.dir
-      size: 1533466
+      md5: fcf8c560f9977d76724883aa206f839a.dir
+      size: 1534110
       nfiles: 22
     - path: Datos/processed/val.zarr
       hash: md5
