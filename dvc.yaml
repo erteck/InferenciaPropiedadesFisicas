@@ -96,3 +96,22 @@ stages:
     metrics:
       - Datos/splits/split_summary.json:
           cache: false
+
+  mask_eval:
+    cmd: python -m src.data.evaluate_masks
+    deps:
+      - src/data/common.py
+      - src/data/desi.py
+      - src/data/mask_eval.py
+      - src/data/evaluate_masks.py
+      - Datos/DESI
+      - Datos/inferencia.fits
+    params:
+      - mask_eval
+    outs:
+      - Datos/interim/mask_eval/figures
+    metrics:
+      - Datos/interim/mask_eval/metrics.csv:
+          cache: false
+      - Datos/interim/mask_eval/summary.json:
+          cache: false

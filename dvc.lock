@@ -261,3 +261,56 @@ stages:
       hash: md5
       md5: 49f96038f20aa062772267b640a18d79
       size: 3
+  mask_eval:
+    cmd: python -m src.data.evaluate_masks
+    deps:
+    - path: Datos/DESI
+      hash: md5
+      md5: c5e99b4b761dd3ac6e206b4da18384b5.dir
+      size: 76838400
+      nfiles: 10
+    - path: Datos/inferencia.fits
+      hash: md5
+      md5: 6a0d509687ab942dc194a784d5ecbcec
+      size: 1679040
+    - path: src/data/common.py
+      hash: md5
+      md5: 10dbdc9af021b92cf87485c28a8ec525
+      size: 699
+    - path: src/data/desi.py
+      hash: md5
+      md5: 9fe44ba0ef15ce2c277ef334d4e7eda3
+      size: 2069
+    - path: src/data/evaluate_masks.py
+      hash: md5
+      md5: ec19d58810b4f9c817df7e46b4fa2fb2
+      size: 6959
+    - path: src/data/mask_eval.py
+      hash: md5
+      md5: 3bc0139b6ec383d95c09cffd4f4a3a22
+      size: 7005
+    params:
+      params.yaml:
+        mask_eval:
+          cubes: Datos/DESI
+          catalog: Datos/inferencia.fits
+          ref_factor: 2.0
+          iso_sb: 25.0
+          threshold:
+            nsigma: 2.0
+            smooth_px: 2.0
+            grow_px: 2
+    outs:
+    - path: Datos/interim/mask_eval/figures
+      hash: md5
+      md5: 8dce96956117e2a946bb72d793504722.dir
+      size: 5739685
+      nfiles: 11
+    - path: Datos/interim/mask_eval/metrics.csv
+      hash: md5
+      md5: 8f1d09129a126f2cc364d93de4f55613
+      size: 5323
+    - path: Datos/interim/mask_eval/summary.json
+      hash: md5
+      md5: 26b017afc789e0930ac97b014f4fd0de
+      size: 5964

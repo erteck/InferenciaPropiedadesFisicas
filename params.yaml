@@ -33,3 +33,13 @@ split:
     val: 0.15
     test: 0.15
   stratify_by: T_11
+
+mask_eval:
+  cubes: Datos/DESI
+  catalog: Datos/inferencia.fits
+  ref_factor: 2.0
+  iso_sb: 25.0
+  threshold:
+    nsigma: 2.0
+    smooth_px: 2.0
+    grow_px: 2

@@ -1,0 +1,6 @@
+outs:
+- md5: c5e99b4b761dd3ac6e206b4da18384b5.dir
+  size: 76838400
+  nfiles: 10
+  hash: md5
+  path: DESI

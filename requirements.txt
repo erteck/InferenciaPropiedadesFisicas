@@ -18,3 +18,7 @@ numcodecs>=0.12
 
 # Notebooks
 jupyterlab>=4.0
+
+# Análisis de máscaras y figuras
+photutils>=1.12
+matplotlib>=3.8

@@ -11,6 +11,8 @@ dependencies:
   - zarr>=2.17,<3
   - numcodecs>=0.12
   - jupyterlab>=4.0
+  - photutils>=1.12
+  - matplotlib>=3.8
   - pip
   - pip:
       - dvc>=3.50
