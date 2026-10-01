@@ -1,0 +1,125 @@
+================================================================================
+  COMPENDIO METODOLÓGICO DE TESIS: CONSOLIDACIÓN Y REFACCIÓN DEL BLOQUE 0
+  Maestría en Inteligencia Artificial Aplicada a la Astrofísica - UNAM
+  Documento Consolidado de Cierre de Pipeline de Preprocesamiento
+================================================================================
+
+1. CHALLENGE A RESOLVER
+--------------------------------------------------------------------------------
+El objetivo central de esta fase consiste en purificar el dataset de imágenes 
+multibanda (g, r, z) provenientes del DESI Legacy Imaging Survey (DR10) para 
+construir un Ground Truth morfológico impecable, macizo y continuo. Este bloque 
+arquitectónico, denominado Bloque 0, mitiga de raíz las siguientes limitantes 
+críticas identificadas en el estado del arte previo (Katachi, Alfonzo et al. 2024):
+
+- Mitigación del Principio GIGO (Garbage In, Garbage Out): El grano fotográfico 
+  de alta frecuencia del fondo del cielo y la presencia masiva de estrellas 
+  espurias de la Vía Láctea en primer plano deforman los estimadores globales. 
+  Esto introduce sesgos acumulativos de hasta ~0.56 dex en el cálculo de la 
+  masa estelar mediante códigos pixel a pixel como pyPipe3D.
+- Erradicación de Inconsistencias Físicas y Agujeros: Las técnicas básicas de 
+  umbralización fotométrica generan máscaras porosas plagadas de "huecos" falsos 
+  en las regiones de carriles de polvo interestelar o zonas donde se removieron 
+  estrellas espurias. El sistema requiere fronteras continuas y rellenas.
+- Conservación de Irregularidades Reales del Disco: El pipeline debe ser lo 
+  suficientemente sensible como para distinguir entre una mezcla de fuentes 
+  parásitas (blending) y deformaciones morfológicas genuinas de la galaxia, tales 
+  como plumas de marea, asimetrías por interacción dinámica o brazos espirales 
+  incipientes detectables en bajas frecuencias luminosas (Banda UV/g).
+
+
+2. PIPELINE DE RESOLUCIÓN DETALLADO (CONSOLIDADO CON FUNCIONES FINALES)
+--------------------------------------------------------------------------------
+Basado en el corpus de funciones matemáticas consolidadas en el script de 
+producción, el pipeline unificado ejecuta las siguientes etapas secuenciales:
+
+Fase I: Análisis y Reducción del Cielo Local (Función: metricas_fondo)
+- Entrada: Se recibe un canal individual del cubo de datos crudo en nanomaggies.
+- Operación: Se calcula la estadística del fondo cósmico mediante 
+  'sigma_clipped_stats'. Se extraen los componentes geométricos regionales con 
+  'regionprops'. Mediante una lista por comprensión filtrada por el área máxima, 
+  se aísla la longitud del semieje mayor ('axis_major_length') del objeto principal.
+- Automatización del Filtro: Se calcula dinámicamente un tamaño de caja local 
+  isótropo empleando un factor de escala protector intermedio (Alpha = 5.0) para 
+  evitar sub o sobre-sustracciones (Caja = max_axis / 5). Se fuerza la restricción 
+  impar simétrica. 'Background2D' modela el fondo local y devuelve una matriz limpia 
+  donde el cielo parásito se reduce a un valor plano homogéneo ('arr_cielo_canal').
+
+Fase II: Normalización Fotométrica Multiescala (Función: norm_fits)
+- Entrada: La matriz de canales ópticos colapsados.
+- Operación: Se calculan los valores dinámicos de atenuación ('alpha') basados en 
+  los flujos de los nanomaggies para inicializar de forma no lineal la función de 
+  estiramiento de seno hiperbólico inverso ('AsinhStretch').
+- Salida: Se construye un diccionario indexado de transformaciones de intervalo 
+  ('MinMaxInterval', 'PercentileInterval', 'AsymmetricPercentileInterval') que 
+  rescata de manera lineal el flujo de baja señal del halo y el puente de materia.
+
+Fase III: Segmentación y Exclusión del Centroide (Función: mascara_gaussiana)
+- Entrada: El arreglo colapsado en escala de grises y el umbral de ruido seleccionado.
+- Operación: Se aplica una convolución espacial isotrópica ('Gaussian2DKernel', 
+  sigma=3) para difuminar el grano fino. 'detect_sources' genera un mapa regional de 
+  etiquetas discretas (Labels).
+- Aislamiento Láser del Target: Mediante una lista por comprensión, se evalúa el 
+  atributo 'centroid' de todos los segmentos y se calcula su distancia euclidiana 
+  respecto al centro exacto del encuadre astronómico (400, 400). El método selecciona 
+  exclusivamente el ID con la distancia mínima, generando la máscara booleana 
+  maestra 'bm_galaxia' confinada al cuerpo real del sistema estudiado.
+
+Fase IV: Enmascaramiento y Limpieza de Espurias por Canal (Función: limpieza_estrellas)
+- Entrada: El cubo multibanda original, el objeto de fondo y la máscara maestra.
+- Operación: Se itera mediante un ciclo 'for' sobre los canales. Empleando la máscara 
+  invertida ('~mask'), se ejecuta un operador condicional 'np.where' elemento por elemento. 
+  Cualquier pico de brillo o estrella espuria flotando en el espacio profundo exterior 
+  es fulminada y reemplazada instantáneamente por el valor constante del ruido de 
+  fondo ('std_bkg'), logrando el "efecto cartulina negra" sin alterar la galaxia.
+
+Fase V: Optimización Geodésica y Clausura Binaria (Función: max_luz_spline)
+- Entrada: El cubo purificado de estrellas y la máscara de oclusión.
+- Operación: Se calcula el gradiente inverso ('inverse_gaussian_gradient') sobre la 
+  matriz combinada estirada por Lupton, cavando una fosa profunda continua de ceros 
+  que registra la geometría real e irregular del objeto. 
+- Ajuste del Snake: 'morphological_geodesic_active_contour' despliega una spline 
+  elástica con suavizado regularizador (smoothing=2, balloon=0.2, threshold=0.1) que 
+  abraza la periferia difusa. El proceso cierra con 'ndimage.binary_fill_holes', 
+  sellando de forma compacta la porosidad de los carriles de polvo y arrojando el 
+  Target numérico final en tipo 'np.float32' (1.0 = Galaxia, 0.0 = Espacio Profundo).
+
+
+3. ÁREAS DE OPPORTUNIDAD DETECTADAS PARA MEJORAR EL PIPELINE
+--------------------------------------------------------------------------------
+- Optimización Numérica del Rebanado de Regionprops: En la función 'metricas_fondo', 
+  la lista por comprensión ejecuta el cálculo del máximo de las áreas en cada paso 
+  del lazo: 'max([i.area for i in reg_props])'. Esto provoca una complejidad 
+  computacional redundante de O(N²). Se debe calcular el valor del área máxima 
+  previamente en una variable escalar externa para reducir el tiempo de ejecución.
+- Sustitución de Background2D por Filtros No Lineales: Al trabajar con nanomaggies 
+  ya calibrados de DESI DR10, la interpolación de mallas de Background2D puede ser 
+  demasiado agresiva en objetos extensos. Sustituir este bloque por una resta 
+  escalar plana directa basada en la mediana de 'sigma_clipped_stats' combinada 
+  con un filtro de mediana espacial acelerará el pipeline y protegerá la banda Z.
+- Indexación Explícita de Canales en Diccionarios: Reestructurar el retorno de la 
+  función de normalización para que emplee estructuras de tensores tridimensionales 
+  unificados de NumPy ('np.stack') indexados con enteros en lugar de diccionarios 
+  con strings de canales independientes ('canal_b', etc.), agilizando el paso de 
+  dimensiones hacia el formato channels-first exigido por PyTorch (Canales, Alto, Ancho).
+
+
+4. PRÓXIMO HITO CRÍTICO: IMPLEMENTACIÓN DE LA CLASE "PREPROCESAMIENTO"
+--------------------------------------------------------------------------------
+¡MÁXIMA PRIORIDAD PARA EL EQUIPO DE DESARROLLO! 
+
+Queda pendiente como el siguiente paso de diseño conceptual e informático estructurar 
+la clase formal "PREPROCESAMIENTO". El objetivo imperativo es encapsular todas las 
+funciones sueltas analizadas ('metricas_fondo', 'norm_fits', 'mascara_gaussiana', 
+'limpieza_estrellas' y 'max_luz_spline') en un único paso unificado y monolítico.
+
+Esta refactorización orientada a objetos garantizará:
+1. Una integración directa y transparente como un método modular dentro del 
+   Dataloader de PyTorch o TensorFlow para procesamiento masivo en lote (Batch).
+2. El blindaje absoluto de la memoria RAM, forzando a que las variables locales 
+   de los tensores e imágenes intermedias se destruyan automáticamente al salir del 
+   ámbito de la clase, anulando los desbordamientos de caché en corridas largas.
+3. La creación de una interfaz de tipo "caja negra" limpia para el resto de los 
+   compañeros, donde la entrada sea exclusivamente el archivo FITS crudo de DESI DR10 
+   y la salida sea el tensor RGB listo junto con su máscara de Ground Truth purificada.
+================================================================================
