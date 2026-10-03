@@ -71,6 +71,17 @@ def preprocess(x_raw: torch.Tensor, norm: Normalizer, out_px: int) -> torch.Tens
     return stretch(resample(x_raw.float(), out_px), norm.sigma, norm.beta) / s
 
 
+def band_permutation(order, bands=("g", "r", "z")) -> list[int]:
+    """Índices para pasar del orden del FITS (g, r, z) al orden de entrada de la red."""
+    return [list(bands).index(b) for b in order]
+
+
+def network_input(x_raw: torch.Tensor, norm: Normalizer, out_px: int, order=("z", "r", "g")) -> torch.Tensor:
+    """Imagen cruda (g, r, z) → entrada de la red: transformación de brillo y orden de
+    canales `order` (por defecto z, r, g; ver config.INPUT_BAND_ORDER)."""
+    return preprocess(x_raw, norm, out_px)[:, band_permutation(order)]
+
+
 def augment(x: torch.Tensor, gen: torch.Generator, degrees: float = 360.0) -> torch.Tensor:
     """RandomHorizontalFlip(0.5) → RandomVerticalFlip(0.5) → RandomRotation((0,deg),
     NEAREST, fill=0), por muestra, como el Compose pickleado de Katachi."""

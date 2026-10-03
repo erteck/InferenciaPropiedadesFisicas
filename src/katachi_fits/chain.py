@@ -1,8 +1,13 @@
 """Cadena de Katachi: tres ResNet50 (M* → SFR → D4000), plan §3.4.
 
 - ImageNet V1; `fc = Linear(2048, 1)`.
-- Las redes de SFR y D4000 reemplazan `conv1` por una convolución nueva de 4 y 5
-  canales con la inicialización aleatoria por defecto de PyTorch (como Katachi).
+- Sin congelado (modelos publicados de Katachi): las redes de SFR y D4000 reemplazan
+  `conv1` por una convolución nueva aleatoria de 4 y 5 canales.
+- Con congelado (artículo §3.1.3; Documentación/Propuesta_congelado_Katachi.md):
+  · se congelan los parámetros preentrenados con índice < 144 en el orden de la
+    ResNet50 (D1) y sus BatchNorm quedan en modo evaluación (D2);
+  · en SFR y D4000, `conv1` se divide en la parte de imagen (pesos de ImageNet,
+    congelada) y la de los canales extra (iniciada en cero, entrenable) (D3).
 - La predicción previa se agrega, sin normalizar y desacoplada (`detach`), como un
   plano constante.
 - `GhostBatchNorm2d` reproduce `nn.DataParallel` en 2 GPUs: estadísticas por cada
@@ -64,6 +69,58 @@ def resnet50(in_ch: int, imagenet: bool = True) -> nn.Module:
     return m
 
 
+class SplitInputConv(nn.Module):
+    """conv1 de 4 o 5 canales escrita como suma de dos convoluciones: la de imagen
+    (3 canales, pesos preentrenados) y la de los canales extra (masa, SFR), iniciada
+    en cero. Es matemáticamente igual a una sola Conv2d con los pesos concatenados,
+    pero permite congelar solo la parte preentrenada."""
+
+    def __init__(self, conv_img: nn.Conv2d, n_extra: int):
+        super().__init__()
+        self.conv_img = conv_img
+        self.conv_extra = nn.Conv2d(n_extra, conv_img.out_channels, kernel_size=conv_img.kernel_size,
+                                    stride=conv_img.stride, padding=conv_img.padding, bias=False)
+        nn.init.zeros_(self.conv_extra.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv_img(x[:, :3]) + self.conv_extra(x[:, 3:])
+
+    def as_single_weight(self) -> torch.Tensor:
+        return torch.cat([self.conv_img.weight, self.conv_extra.weight], 1)
+
+
+def frozen_param_names(first_trainable: int) -> set[str]:
+    """Nombres de los parámetros de una ResNet50 estándar con índice < first_trainable
+    (orden de `model.parameters()`, el mismo del bucle de Katachi)."""
+    ref = models.resnet50(weights=None)
+    ref.fc = nn.Linear(2048, 1)
+    return {n for i, (n, _) in enumerate(ref.named_parameters()) if i < first_trainable}
+
+
+def freeze_pretrained(net: nn.Module, first_trainable: int, freeze_bn_stats: bool = True) -> dict:
+    """Congela en `net` los parámetros preentrenados con índice < first_trainable.
+    `conv1.weight` de una SplitInputConv corresponde a su parte de imagen; los canales
+    extra quedan entrenables. Marca las BatchNorm congeladas para que siempre corran en
+    modo evaluación. Devuelve el conteo de parámetros congelados y entrenables."""
+    frozen = frozen_param_names(first_trainable)
+    alias = {"conv1.conv_img.weight": "conv1.weight"}
+    for name, p in net.named_parameters():
+        p.requires_grad = alias.get(name, name) not in frozen
+    for mod_name, mod in net.named_modules():
+        if isinstance(mod, nn.BatchNorm2d):
+            mod._frozen_stats = freeze_bn_stats and not mod.weight.requires_grad
+    n_frozen = sum(p.numel() for p in net.parameters() if not p.requires_grad)
+    n_train = sum(p.numel() for p in net.parameters() if p.requires_grad)
+    return {"congelados": n_frozen, "entrenables": n_train}
+
+
+def apply_frozen_bn(module: nn.Module) -> None:
+    """Pone en modo evaluación las BatchNorm marcadas como congeladas."""
+    for m in module.modules():
+        if getattr(m, "_frozen_stats", False):
+            m.eval()
+
+
 def add_plane(x: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
     """Agrega `value` (B,1) como plano constante (B,1,H,W)."""
     plane = value.detach().view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]).to(x.dtype)
@@ -71,15 +128,40 @@ def add_plane(x: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
 
 
 class Chain(nn.Module):
-    """Las tres ResNet50 de Katachi encadenadas: M* → SFR → D4000."""
-    def __init__(self, imagenet: bool = True, ghost_splits: int = 2):
+    """Las tres ResNet50 de Katachi encadenadas: M* → SFR → D4000.
+
+    `freeze_first=None` reproduce la arquitectura de los modelos publicados (todo
+    entrenable, conv1 nueva aleatoria). Con `freeze_first=144` se aplica el congelado
+    del artículo (ver la docstring del módulo)."""
+
+    def __init__(self, imagenet: bool = True, ghost_splits: int = 2, freeze_first: int | None = None,
+                 freeze_bn_stats: bool = True):
         super().__init__()
         self.mass = resnet50(3, imagenet)
-        self.sfr = resnet50(4, imagenet)
-        self.d4000 = resnet50(5, imagenet)
+        if freeze_first is None:
+            self.sfr = resnet50(4, imagenet)
+            self.d4000 = resnet50(5, imagenet)
+        else:
+            self.sfr = resnet50(3, imagenet)
+            self.d4000 = resnet50(3, imagenet)
+            self.sfr.conv1 = SplitInputConv(self.sfr.conv1, 1)
+            self.d4000.conv1 = SplitInputConv(self.d4000.conv1, 2)
         if ghost_splits > 1:
             for m in (self.mass, self.sfr, self.d4000):
                 ghostify(m, ghost_splits)
+        self.freeze_report = {}
+        if freeze_first is not None:
+            for name in ("mass", "sfr", "d4000"):
+                self.freeze_report[name] = freeze_pretrained(getattr(self, name), freeze_first, freeze_bn_stats)
+
+    def nets(self) -> tuple[nn.Module, nn.Module, nn.Module]:
+        return self.mass, self.sfr, self.d4000
+
+    def train(self, mode: bool = True):
+        """Como `nn.Module.train`, pero las BatchNorm congeladas siguen en evaluación."""
+        super().train(mode)
+        apply_frozen_bn(self)
+        return self
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         p1 = self.mass(x)

@@ -63,18 +63,22 @@ def histogramas_entrada(crudo: np.ndarray, entrada: np.ndarray, sigma: np.ndarra
 # Entrenamiento
 # ---------------------------------------------------------------------------
 def curvas_aprendizaje(historia: pd.DataFrame):
-    """Pérdida por época de cada red y tasa de aprendizaje de la red de masa."""
-    fig, axs = plt.subplots(1, 4, figsize=(17, 3.6))
-    cols_tr = ("train_loss_mstar", "train_loss_sfr", "train_loss_d4000")
-    for k, t in enumerate(TARGETS):
-        axs[k].plot(historia.epoch, historia[cols_tr[k]], label="Train (con aumentación)")
-        if f"val_loss_{t}" in historia:
-            axs[k].plot(historia.epoch, historia[f"val_loss_{t}"], label="Validation (con aumentación)")
-            axs[k].plot(historia.epoch, historia[f"val_rmse_{t}_sin_aum"] ** 2, ":", label="Validation (sin aumentación)")
-        axs[k].set(yscale="log", xlabel="época", ylabel="MSE", title=ETIQUETAS[t])
-    axs[0].legend(fontsize=7)
-    axs[3].plot(historia.epoch, historia.lr_mstar)
-    axs[3].set(yscale="log", xlabel="época", title="tasa de aprendizaje (red de M*)")
+    """Pérdida por época de cada red (Train con aumentación; Validation sin ella) y su
+    tasa de aprendizaje. La línea vertical marca la época en que se detuvo cada red."""
+    fig, axs = plt.subplots(2, 3, figsize=(16, 6.5), sharex=True)
+    for k, (t, n) in enumerate(zip(TARGETS, ("mstar", "sfr", "d4000"))):
+        ax = axs[0, k]
+        ax.plot(historia.epoch, historia[f"train_loss_{n}"], label="Train (con aumentación)")
+        if f"val_loss_{n}" in historia:
+            ax.plot(historia.epoch, historia[f"val_loss_{n}"], label="Validation (solo vigilancia)")
+        ax.set(yscale="log", ylabel="MSE", title=ETIQUETAS[t])
+        axs[1, k].plot(historia.epoch, historia[f"lr_{n}"])
+        axs[1, k].set(yscale="log", xlabel="época", ylabel="tasa de aprendizaje")
+        if f"detenida_{n}" in historia and historia[f"detenida_{n}"].fillna(False).astype(bool).any():
+            e = int(historia.loc[historia[f"detenida_{n}"].fillna(False).astype(bool), "epoch"].iloc[0])
+            for a in axs[:, k]:
+                a.axvline(e, color="gray", ls=":", label=f"se detiene (época {e})")
+        axs[0, k].legend(fontsize=7)
     plt.tight_layout(); plt.show()
 
 
@@ -316,11 +320,12 @@ def figura8_pasado(planos: dict[str, np.ndarray], pos, color: np.ndarray, lookba
     plt.colorbar(sc, ax=axs[:, -1], label=etiqueta_color); plt.show()
 
 
-def figura_shap_por_banda(shap: dict[str, dict[str, np.ndarray]], escalas: dict[str, float]):
-    """Perfil radial del mapa de M* separado por banda (Katachi §4.2.3)."""
+def figura_shap_por_banda(shap: dict[str, dict[str, np.ndarray]], escalas: dict[str, float], orden=("z", "r", "g")):
+    """Perfil radial del mapa de M* separado por canal de entrada (Katachi §4.2.3).
+    Katachi recibía R = i, G = r, B = g; nuestra red, `orden`."""
     fig, axs = plt.subplots(1, len(shap), figsize=(5.5 * len(shap), 3.6), squeeze=False)
     for a, (k, d) in zip(axs[0], shap.items()):
-        bandas = ["g", "r", "z"] if k.startswith("E") else ["g", "r", "i"]
+        bandas = list(orden) if k.startswith("E") else ["i", "r", "g"]   # orden de entrada de cada red
         for b in range(3):
             prof = np.array([SM.azimuthal_average(m[..., b]) for m in d["M*"]])
             a.plot(np.arange(prof.shape[1]) * escalas[k], np.median(prof, 0), label=bandas[b])

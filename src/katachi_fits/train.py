@@ -1,20 +1,27 @@
-"""Entrenamiento con la receta auditada de Katachi (plan §3.4) y reanudable.
+"""Entrenamiento de la cadena siguiendo el artículo de Katachi (§3.1.2–3.1.3), reanudable.
 
-Bucle por época (como `MaNGA_DR17_Regr.ipynb`, celdas 24 y 27):
-  1. Entrenar las tres redes juntas, lote 32, orden aleatorio, aumentación.
-     Pérdidas MSE independientes; tres Adam (1e-3, 1e-3, 1e-4).
-  2. Pérdida D4000 en el conjunto retenido → `ReduceLROnPlateau` del optimizador de M*.
-     (Katachi usaba Test; aquí Validation o la pérdida de entrenamiento, decisión D1.)
-  3. `EarlyStopper(1e-3, 10)` con la pérdida D4000 media de entrenamiento.
-  4. Se guarda el estado final (Katachi no restauraba la mejor época).
+Receta (justificación en Documentación/Propuesta_congelado_Katachi.md):
+  1. Las tres redes se entrenan juntas: lote 32, orden aleatorio, aumentación.
+     Cada una tiene su propia pérdida (MSE) y su propio Adam (1e-3).
+  2. Con congelado, solo se optimizan los parámetros entrenables (ver chain.py).
+  3. Cada red tiene su propio ReduceLROnPlateau (paciencia 3), guiado por su
+     pérdida de entrenamiento: el artículo no usa conjunto de validación.
+  4. Cada red tiene su propia parada: sin mejora relativa > 1e-3 en 10 épocas en su
+     pérdida de entrenamiento. Una red detenida queda fija (sin actualizar pesos ni
+     BatchNorm) y sigue produciendo su predicción para la siguiente. El
+     entrenamiento termina cuando las tres se detienen o al llegar a max_epochs.
+  5. Validation solo se registra, para vigilar el sobreajuste; no toma decisiones.
 
-Un solo `backward()` sobre la suma de pérdidas da los mismos gradientes que tres
-llamadas, porque las entradas encadenadas están desacopladas (`detach`).
+Con `per_network=False` y `freeze_pretrained=False` se recupera lo que muestran los
+pesos publicados (todo entrenable, planificador solo en la red de masa): sirve
+como corrida de control.
+
+Un solo `backward()` sobre la suma de las pérdidas activas da los mismos gradientes
+que una llamada por red, porque las entradas encadenadas están desacopladas.
 """
 from __future__ import annotations
 
 import io
-import math
 import random
 import time
 from pathlib import Path
@@ -24,10 +31,12 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from .chain import Chain
+from .chain import Chain, apply_frozen_bn
 from .config import TARGETS, TrainConfig
 from .io_guard import WriteGuard
-from .transforms import Normalizer, augment, preprocess
+from .transforms import Normalizer, augment, network_input
+
+NOMBRES = ("mstar", "sfr", "d4000")
 
 
 class EarlyStopper:
@@ -75,117 +84,148 @@ class GPUData:
 
 
 class Trainer:
-    """Entrena la cadena con la receta de Katachi, guarda un punto de control por época y puede reanudar."""
+    """Entrena la cadena con la receta del artículo, guarda un punto de control por época y puede reanudar."""
+
     def __init__(self, cfg: TrainConfig, norm: Normalizer, out_px: int, run_dir: Path, guard: WriteGuard,
                  device: torch.device, log=print):
         self.cfg, self.norm, self.out_px = cfg, norm, out_px
         self.run_dir, self.guard, self.device, self.log = Path(run_dir), guard, device, log
         torch.backends.cudnn.benchmark = cfg.cudnn_benchmark
         seed_everything(cfg.seed)
-        self.model = Chain(imagenet=True, ghost_splits=cfg.ghost_bn_splits).to(device)
+        self.model = Chain(imagenet=True, ghost_splits=cfg.ghost_bn_splits,
+                           freeze_first=cfg.first_trainable_param if cfg.freeze_pretrained else None,
+                           freeze_bn_stats=cfg.freeze_bn_stats).to(device)
         if cfg.channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)
         fused = cfg.fused_adam and device.type == "cuda"
-        nets = (self.model.mass, self.model.sfr, self.model.d4000)
-        self.opts = [torch.optim.Adam(n.parameters(), lr=lr, fused=fused) if fused else
-                     torch.optim.Adam(n.parameters(), lr=lr) for n, lr in zip(nets, cfg.lr)]
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.opts[0], patience=cfg.scheduler_patience)
-        self.stopper = EarlyStopper(cfg.stop_precision, cfg.stop_patience)
+        self.opts = []
+        for net, lr in zip(self.model.nets(), cfg.lr):
+            params = [p for p in net.parameters() if p.requires_grad]
+            self.opts.append(torch.optim.Adam(params, lr=lr, fused=True) if fused else torch.optim.Adam(params, lr=lr))
+        n_sched = 3 if cfg.per_network else 1
+        self.schedulers = [torch.optim.lr_scheduler.ReduceLROnPlateau(self.opts[k], patience=cfg.scheduler_patience)
+                           for k in range(n_sched)]
+        self.stoppers = [EarlyStopper(cfg.stop_precision, cfg.stop_patience) for _ in range(3 if cfg.per_network else 1)]
+        self.net_stopped = [False, False, False]
         self.gen = torch.Generator(device=device).manual_seed(cfg.seed)
         self.perm_gen = torch.Generator(device="cpu").manual_seed(cfg.seed + 1)
-        self.val_gen = torch.Generator(device=device).manual_seed(cfg.seed + 2)
         self.epoch = 0
         self.history: list[dict] = []
-        self.stopped = False   # detenido por EarlyStopper (no por max_epochs)
         self.forward = torch.compile(self.model) if cfg.compile else self.model
         self.mse = nn.MSELoss()
 
-    # ---------- entrada ----------
-    def _inputs(self, xr: torch.Tensor, train: bool, gen: torch.Generator | None = None) -> torch.Tensor:
-        x = preprocess(xr, self.norm, self.out_px)
-        if train or gen is not None:
-            x = augment(x, gen if gen is not None else self.gen, self.cfg.rotation_degrees)
+    # ---------- entrada y modos ----------
+    def _inputs(self, xr: torch.Tensor, train: bool) -> torch.Tensor:
+        x = network_input(xr, self.norm, self.out_px, self.cfg.input_band_order)
+        if train:
+            x = augment(x, self.gen, self.cfg.rotation_degrees)
         if self.cfg.channels_last:
             x = x.contiguous(memory_format=torch.channels_last)
         return x
 
+    def _set_train_mode(self) -> None:
+        """Modo entrenamiento, salvo BatchNorm congeladas y redes ya detenidas."""
+        self.model.train()
+        for net, stopped in zip(self.model.nets(), self.net_stopped):
+            if stopped:
+                net.eval()
+        apply_frozen_bn(self.model)
+
+    @property
+    def stopped(self) -> bool:
+        return all(self.net_stopped)
+
+    @property
+    def done(self) -> bool:
+        """True cuando las tres redes se detuvieron o se llegó a `max_epochs`."""
+        return self.stopped or self.epoch >= self.cfg.max_epochs
+
     # ---------- época ----------
     def train_epoch(self, data: GPUData) -> dict:
         """Una época sobre Train con aumentación; devuelve la pérdida media de cada red."""
-        self.model.train()
+        self._set_train_mode()
         n, bs = len(data), self.cfg.batch_size
         perm = torch.randperm(n, generator=self.perm_gen).to(self.device)
         sums = torch.zeros(3, device=self.device)
         nb = 0
+        activas = [k for k in range(3) if not self.net_stopped[k]]
         for i in range(0, n, bs):
             idx = perm[i:i + bs]
             x = self._inputs(data.x[idx], train=True)
             y = data.y[idx]
-            for o in self.opts:
-                o.zero_grad(set_to_none=True)
+            for k in activas:
+                self.opts[k].zero_grad(set_to_none=True)
             p = self.forward(x)
             losses = [self.mse(p[k], y[:, k:k + 1]) for k in range(3)]
-            torch.stack(losses).sum().backward()
-            for o in self.opts:
-                o.step()
+            if activas:
+                torch.stack([losses[k] for k in activas]).sum().backward()
+                for k in activas:
+                    self.opts[k].step()
             sums += torch.stack([l.detach() for l in losses])
             nb += 1
         avg = (sums / nb).tolist()
-        return {"train_loss_mstar": avg[0], "train_loss_sfr": avg[1], "train_loss_d4000": avg[2]}
+        return {f"train_loss_{NOMBRES[k]}": avg[k] for k in range(3)}
 
     @torch.no_grad()
-    def predict(self, data: GPUData, bs: int = 128, aug_gen: torch.Generator | None = None) -> np.ndarray:
-        """Predicción en modo eval. Con `aug_gen`, aplica la aumentación de Katachi
-        (su DataLoader de Test la tenía; así se calculaba la señal del scheduler)."""
+    def predict(self, data: GPUData, bs: int = 128) -> np.ndarray:
+        """Predicción en modo evaluación, sin aumentación."""
         self.model.eval()
         out = []
         for i in range(0, len(data), bs):
-            x = self._inputs(data.x[i:i + bs], train=False, gen=aug_gen)
+            x = self._inputs(data.x[i:i + bs], train=False)
             out.append(torch.cat(self.model(x), 1).float().cpu())
         return torch.cat(out).numpy()
 
+    def _step_schedulers_and_stoppers(self, row: dict) -> None:
+        if self.cfg.per_network:
+            for k in range(3):
+                if self.net_stopped[k]:
+                    continue
+                signal = row[f"{'train' if self.cfg.scheduler_signal == 'train' else 'val'}_loss_{NOMBRES[k]}"]
+                self.schedulers[k].step(signal)
+                if not self.stoppers[k].step(row[f"train_loss_{NOMBRES[k]}"]):
+                    self.net_stopped[k] = True
+                    row[f"detenida_{NOMBRES[k]}"] = True
+        else:   # control: como los pesos publicados (planificador en masa, parada por D4000)
+            signal = row["val_loss_d4000" if self.cfg.scheduler_signal == "val" else "train_loss_d4000"]
+            self.schedulers[0].step(signal)
+            if not self.stoppers[0].step(row["train_loss_d4000"]):
+                self.net_stopped = [True, True, True]
+
     def fit(self, train: GPUData, held_out: GPUData | None, checkpoint_every: int = 1) -> pd.DataFrame:
-        """Entrena hasta que se cumple la parada de Katachi o `max_epochs`; reanuda si hay punto de control."""
-        if self.cfg.scheduler_on == "val" and held_out is None:
-            raise ValueError("scheduler_on='val' requiere un conjunto Validation (D1-a)")
+        """Entrena hasta que las tres redes se detienen o `max_epochs`; reanuda si hay punto de control."""
+        if self.cfg.scheduler_signal == "val" and held_out is None:
+            raise ValueError("scheduler_signal='val' requiere un conjunto Validation")
         self.resume()
-        while not self.stopped and self.epoch < self.cfg.max_epochs:
+        while not self.done:
             t0 = time.time()
             self.epoch += 1
             row = {"epoch": self.epoch, **self.train_epoch(train)}
-            if held_out is not None:
-                yv = held_out.y.cpu().numpy()
-                pa = self.predict(held_out, aug_gen=self.val_gen)   # señal del scheduler (como Katachi)
-                pv = self.predict(held_out)                          # métrica limpia, solo registro
+            if held_out is not None:     # solo para vigilar el sobreajuste
+                pv, yv = self.predict(held_out), held_out.y.cpu().numpy()
                 for k, t in enumerate(TARGETS):
-                    row[f"val_loss_{t}"] = float(np.mean((pa[:, k] - yv[:, k]) ** 2))
-                    row[f"val_rmse_{t}_sin_aum"] = float(np.sqrt(np.mean((pv[:, k] - yv[:, k]) ** 2)))
-            sched_signal = row["val_loss_d4000"] if self.cfg.scheduler_on == "val" else row["train_loss_d4000"]
-            self.scheduler.step(sched_signal)
-            row.update(lr_mstar=self.opts[0].param_groups[0]["lr"], seconds=time.time() - t0)
-            self.stopped = not self.stopper.step(row["train_loss_d4000"])
+                    row[f"val_loss_{NOMBRES[k]}"] = float(np.mean((pv[:, k] - yv[:, k]) ** 2))
+            self._step_schedulers_and_stoppers(row)
+            for k in range(3):
+                row[f"lr_{NOMBRES[k]}"] = self.opts[k].param_groups[0]["lr"]
+            row["seconds"] = time.time() - t0
             self.history.append(row)
             if self.epoch % checkpoint_every == 0 or self.done:
                 self.save()
             self.log(" ".join(f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}" for k, v in row.items()))
-        if self.done:
-            self.save_final()
+        self.save_final()
         return pd.DataFrame(self.history)
-
-    @property
-    def done(self) -> bool:
-        """True cuando la parada temprana se activó o se llegó a `max_epochs`."""
-        return self.stopped or self.epoch >= self.cfg.max_epochs
 
     # ---------- persistencia ----------
     def state(self) -> dict:
-        """Todo lo necesario para reanudar exactamente: pesos, optimizadores, scheduler, parada y generadores aleatorios."""
+        """Todo lo necesario para reanudar exactamente: pesos, optimizadores, planificadores, paradas y generadores."""
         return {
-            "epoch": self.epoch, "stopped": self.stopped, "history": self.history,
+            "epoch": self.epoch, "net_stopped": self.net_stopped, "history": self.history,
             "model": self.model.state_dict(),
             "opts": [o.state_dict() for o in self.opts],
-            "scheduler": self.scheduler.state_dict(), "stopper": self.stopper.state_dict(),
-            "gen": self.gen.get_state(), "perm_gen": self.perm_gen.get_state(), "val_gen": self.val_gen.get_state(),
+            "schedulers": [s.state_dict() for s in self.schedulers],
+            "stoppers": [s.state_dict() for s in self.stoppers],
+            "gen": self.gen.get_state(), "perm_gen": self.perm_gen.get_state(),
             "torch_rng": torch.get_rng_state(), "np_rng": np.random.get_state(), "py_rng": random.getstate(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
         }
@@ -200,7 +240,7 @@ class Trainer:
                          lambda t: pd.DataFrame(self.history).to_csv(t, index=False), allow_replace=True)
 
     def save_final(self) -> None:
-        """Guarda los pesos de la última época en `final_model.pt` (una sola vez)."""
+        """Guarda los pesos finales en `final_model.pt` (una sola vez)."""
         target = self.run_dir / "final_model.pt"
         if not target.exists():
             buf = io.BytesIO()
@@ -216,20 +256,56 @@ class Trainer:
         self.model.load_state_dict(s["model"])
         for o, so in zip(self.opts, s["opts"]):
             o.load_state_dict(so)
-        self.scheduler.load_state_dict(s["scheduler"])
-        self.stopper.load_state_dict(s["stopper"])
+        for sc, ss in zip(self.schedulers, s["schedulers"]):
+            sc.load_state_dict(ss)
+        for st, ss in zip(self.stoppers, s["stoppers"]):
+            st.load_state_dict(ss)
         self.gen.set_state(s["gen"].cpu())
         self.perm_gen.set_state(s["perm_gen"].cpu())
-        self.val_gen.set_state(s["val_gen"].cpu())
         torch.set_rng_state(s["torch_rng"].cpu())
         np.random.set_state(s["np_rng"])
         random.setstate(s["py_rng"])
         if s.get("cuda_rng") is not None and torch.cuda.is_available():
             torch.cuda.set_rng_state_all([t.cpu() for t in s["cuda_rng"]])
-        self.epoch, self.stopped, self.history = s["epoch"], s["stopped"], s["history"]
-        self.log(f"[resume] reanudado en la época {self.epoch} (detenido={self.stopped})")
+        self.epoch, self.net_stopped, self.history = s["epoch"], list(s["net_stopped"]), s["history"]
+        self.log(f"[reanudación] época {self.epoch}, redes detenidas {self.net_stopped}")
         return True
 
     def load_final(self) -> None:
         """Carga `final_model.pt`."""
         self.model.load_state_dict(torch.load(self.run_dir / "final_model.pt", map_location=self.device))
+
+
+def freezing_audit(chain: Chain, first_trainable: int, imagenet_state: dict) -> pd.DataFrame:
+    """Compara una cadena entrenada con los pesos de ImageNet: para cada red, cuántos
+    tensores congelados (parámetros y buffers de BatchNorm) siguen idénticos bit a bit
+    y cuántos entrenables cambiaron. Es la prueba que muestra si el congelado fue real."""
+    from .chain import frozen_param_names
+
+    frozen = frozen_param_names(first_trainable)
+    alias = {"conv1.conv_img.weight": "conv1.weight"}
+    filas = []
+    for name, net in zip(("masa", "SFR", "D4000"), chain.nets()):
+        sd = {k: v.detach().cpu() for k, v in net.state_dict().items()}
+        bn_frozen = {n.rsplit(".", 1)[0] for n in frozen if "bn" in n or "downsample.1" in n}
+        cong_ok = cong_tot = ent_cambio = ent_tot = 0
+        for k, v in sd.items():
+            ref_key = alias.get(k, k)
+            capa = ref_key.rsplit(".", 1)[0]
+            es_congelado = ref_key in frozen or (capa in bn_frozen and ref_key.split(".")[-1] in
+                                                 ("running_mean", "running_var", "num_batches_tracked"))
+            if es_congelado and ref_key in imagenet_state and imagenet_state[ref_key].shape == v.shape:
+                cong_tot += 1
+                cong_ok += int(torch.equal(v, imagenet_state[ref_key]))
+            elif not es_congelado and v.dtype.is_floating_point and not k.endswith(("running_mean", "running_var")):
+                ent_tot += 1
+                ref = imagenet_state.get(ref_key)
+                if ref is None or ref.shape != v.shape:     # capas nuevas (fc, canales extra): ¿dejaron su valor inicial?
+                    cambiado = bool(v.abs().sum() > 0) if "conv_extra" in k else True
+                else:
+                    cambiado = not torch.equal(v, ref)
+                ent_cambio += int(cambiado)
+        filas.append({"red": name, "congelados idénticos a ImageNet": f"{cong_ok}/{cong_tot}",
+                      "entrenables modificados": f"{ent_cambio}/{ent_tot}",
+                      "parámetros entrenables": sum(p.numel() for p in net.parameters() if p.requires_grad)})
+    return pd.DataFrame(filas)

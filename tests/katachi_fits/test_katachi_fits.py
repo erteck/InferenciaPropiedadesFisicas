@@ -193,7 +193,7 @@ def test_early_stopper_is_katachi():
 
 # ---------------------------------------------------------------- entrenamiento y reanudación
 def _tiny_trainer(tmp_path, seed=0):
-    cfg = TrainConfig(seed=seed, batch_size=4, max_epochs=2, ghost_bn_splits=2, scheduler_on="val",
+    cfg = TrainConfig(seed=seed, batch_size=4, max_epochs=2, ghost_bn_splits=2,
                       fused_adam=False, channels_last=False, cudnn_benchmark=False)
     norm = Normalizer(np.ones(3) * 0.01, np.ones(3) * 5, 3.0)
     guard = WriteGuard(tmp_path, read_only=[tmp_path / "ro"])

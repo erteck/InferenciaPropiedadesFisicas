@@ -46,13 +46,24 @@ CUT_LOG_SFR = (-4.0, 2.0)       # Katachi: −4 < log SFR < 2  (y D4000 finito)
 # fuera del experimento, registrados en exclusiones.csv. Katachi no usaba este filtro.
 QC_GROUPS_INCLUDED = ("OK",)
 
-# --- Receta de entrenamiento de Katachi (auditada; plan §3.4) ----------------
+# --- Receta de entrenamiento: el artículo de Katachi §3.1.2–3.1.3 -------------
+# Justificación de cada valor: Documentación/Propuesta_congelado_Katachi.md (D1–D9).
 SEED = 42
 BATCH_SIZE = 32
-LR_MSTAR, LR_SFR, LR_D4000 = 1e-3, 1e-3, 1e-4   # código de Katachi (el artículo dice 1e-3 para las tres)
-SCHEDULER_PATIENCE = 3          # ReduceLROnPlateau, solo en el optimizador de M*
-STOP_PRECISION = 1e-3           # EarlyStopper(precision, patience) sobre la pérdida D4000 de Train
+LR_MSTAR, LR_SFR, LR_D4000 = 1e-3, 1e-3, 1e-3   # D6: "a learning rate of 10⁻³ for all three networks"
+SCHEDULER_PATIENCE = 3          # D7: ReduceLROnPlateau, uno por red
+SCHEDULER_SIGNAL = "train"      # D7: pérdida de entrenamiento de cada red (el artículo no usa validación)
+PER_NETWORK = True              # D7–D8: planificador y parada independientes por red
+STOP_PRECISION = 1e-3           # D8: mejora relativa mínima (EarlyStopper de los autores)
 STOP_PATIENCE = 10
+# Congelado (D1–D3). FREEZE_PRETRAINED = False reproduce lo que muestran los pesos
+# publicados (todo entrenable): sirve como corrida de control.
+FREEZE_PRETRAINED = True
+FIRST_TRAINABLE_PARAM = 144     # D1: umbral del código de los autores → últimas 5 conv + lineal
+FREEZE_BN_STATS = True          # D2: BatchNorm congelada en modo evaluación
+# D4: orden de canales a la entrada de la red. Los filtros congelados de ImageNet
+# esperan R, G, B; Katachi usaba R = i, G = r, B = g (la banda más roja en R).
+INPUT_BAND_ORDER = ("z", "r", "g")
 MAX_EPOCHS = 1000
 GHOST_BN_SPLITS = 2             # Katachi entrenó con nn.DataParallel en 2 GPUs
 ROTATION_DEGREES = 360.0        # RandomRotation((0, 360)), vecino más cercano, relleno 0
@@ -190,14 +201,17 @@ class TrainConfig:
     batch_size: int = BATCH_SIZE
     lr: tuple[float, float, float] = (LR_MSTAR, LR_SFR, LR_D4000)
     scheduler_patience: int = SCHEDULER_PATIENCE
+    scheduler_signal: str = SCHEDULER_SIGNAL
+    per_network: bool = PER_NETWORK
+    freeze_pretrained: bool = FREEZE_PRETRAINED
+    first_trainable_param: int = FIRST_TRAINABLE_PARAM
+    freeze_bn_stats: bool = FREEZE_BN_STATS
+    input_band_order: tuple[str, ...] = INPUT_BAND_ORDER
     stop_precision: float = STOP_PRECISION
     stop_patience: int = STOP_PATIENCE
     max_epochs: int = MAX_EPOCHS
     ghost_bn_splits: int = GHOST_BN_SPLITS
     rotation_degrees: float = ROTATION_DEGREES
-    # D1-a: el scheduler mira la pérdida D4000 en un Validation separado de Train.
-    # D1-b: scheduler_on="train" y val_fraction=0 (entrena con todo Train).
-    scheduler_on: str = "val"
     val_fraction: float = VAL_FRACTION
     val_seed: int = VAL_SEED
     # Optimizaciones de velocidad que no cambian el método (plan §3.5).
