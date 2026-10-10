@@ -121,9 +121,10 @@ def apply_frozen_bn(module: nn.Module) -> None:
             m.eval()
 
 
-def add_plane(x: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+def add_plane(x: torch.Tensor, value: torch.Tensor, detach: bool = True) -> torch.Tensor:
     """Agrega `value` (B,1) como plano constante (B,1,H,W)."""
-    plane = value.detach().view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]).to(x.dtype)
+    v = value.detach() if detach else value
+    plane = v.view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3]).to(x.dtype)
     return torch.cat([x, plane], 1)
 
 
@@ -135,8 +136,15 @@ class Chain(nn.Module):
     del artículo (ver la docstring del módulo)."""
 
     def __init__(self, imagenet: bool = True, ghost_splits: int = 2, freeze_first: int | None = None,
-                 freeze_bn_stats: bool = True):
+                 freeze_bn_stats: bool = True, planos: tuple[list[float], list[float]] | None = None):
         super().__init__()
+        # Planos estandarizados (mejora opcional): media y desviación de log M* y log SFR
+        # en entrenamiento. Solo se registran si se piden, para que los pesos de las
+        # corridas sin esta opción se sigan cargando igual.
+        self.estandariza_planos = planos is not None
+        if planos is not None:
+            self.register_buffer("plano_mu", torch.tensor(planos[0], dtype=torch.float32))
+            self.register_buffer("plano_sd", torch.tensor(planos[1], dtype=torch.float32))
         self.mass = resnet50(3, imagenet)
         if freeze_first is None:
             self.sfr = resnet50(4, imagenet)
@@ -163,11 +171,17 @@ class Chain(nn.Module):
         apply_frozen_bn(self)
         return self
 
+    def plano(self, p: torch.Tensor, k: int) -> torch.Tensor:
+        """Valor del plano k (0: masa, 1: SFR) que recibe la red siguiente."""
+        if not self.estandariza_planos:
+            return p
+        return (p - self.plano_mu[k]) / self.plano_sd[k]
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         p1 = self.mass(x)
-        x4 = add_plane(x, p1)
+        x4 = add_plane(x, self.plano(p1, 0))
         p2 = self.sfr(x4)
-        x5 = add_plane(x4, p2)
+        x5 = add_plane(x4, self.plano(p2, 1))
         p3 = self.d4000(x5)
         return p1, p2, p3
 
@@ -184,12 +198,11 @@ class ChainTarget(nn.Module):
         p1 = self.chain.mass(x)
         if self.target == 0:
             return p1
-        plane = lambda v: v.view(-1, 1, 1, 1).expand(-1, 1, x.shape[2], x.shape[3])
-        x4 = torch.cat([x, plane(p1)], 1)
+        x4 = add_plane(x, self.chain.plano(p1, 0), detach=False)
         p2 = self.chain.sfr(x4)
         if self.target == 1:
             return p2
-        return self.chain.d4000(torch.cat([x4, plane(p2)], 1))
+        return self.chain.d4000(add_plane(x4, self.chain.plano(p2, 1), detach=False))
 
 
 def load_katachi_state(path: Path) -> OrderedDict:

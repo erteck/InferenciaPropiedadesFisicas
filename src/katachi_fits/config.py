@@ -17,13 +17,18 @@ from pathlib import Path
 # CONSTANTES
 # =============================================================================
 
-# --- Rutas (Google Drive del proyecto) ---------------------------------------
-DRIVE_BASE = Path("/content/drive/MyDrive/DESI_Candidatas_800_GRZ")
-DOWNLOAD_DIRNAME = "descarga_22fb149046f162f3"     # carpeta del descargador (plan.csv, fits/)
-RESULTS_DIRNAME = "resultados_katachi_fits"         # ÚNICA carpeta donde se escribe
+# --- Rutas (Google Drive) ------------------------------------------------------
+# Estructura esperada en "Mi unidad":
+#   descarga_22fb149046f162f3/plan.csv, inventario.csv, configuracion.json
+#   descarga_22fb149046f162f3/fits/*.fits
+#   descarga_22fb149046f162f3/catalogo_candidato_9661_galaxias.csv
+#   resultados_katachi_fits/            ← se crea; ÚNICA carpeta donde se escribe
+DRIVE_BASE = Path("/content/drive/MyDrive")
+DOWNLOAD_DIRNAME = "descarga_22fb149046f162f3"     # carpeta del descargador (plan.csv, fits/, catálogo)
+RESULTS_DIRNAME = "resultados_katachi_fits"
 # Catálogo maestro del equipo (versión 20260925T190214_499654Z). Es el catálogo que
 # leyó el descargador: su SHA-256 coincide con `catalogo_sha256` de configuracion.json.
-TEAM_CATALOG_NAMES = ("catalogo_candidatas_original.csv", "catalogo_candidato_9661_galaxias.csv")
+TEAM_CATALOG_NAMES = ("catalogo_candidato_9661_galaxias.csv", "catalogo_candidatas_original.csv")
 TEAM_CATALOG_SHA256 = "b7fbb3be6a4da4d69b5feb8a0fe740c9eff59c7e800dc8705ccd7ef82439a8ae"
 
 # --- Imágenes FITS (variable experimental, plan §3.3) ------------------------
@@ -222,11 +227,62 @@ class TrainConfig:
 
 
 @dataclass
+class MejorasConfig:
+    """Mejoras de preparación de la imagen, aumentación y velocidad.
+
+    Todas vienen apagadas: con los valores por defecto se reproduce la corrida 2
+    (todas las capas entrenables). Justificación de cada una en
+    Documentación/Propuesta_mejoras_preprocesamiento_DESI.md.
+    """
+    # --- Preparación de la imagen ---
+    margen_rotacion: bool = False      # caché con margen: girar sin esquinas vacías y recortar después
+    rotacion_bilineal: bool = False    # interpolación bilineal en lugar de vecino más cercano
+    estandarizar_imagen: bool = False  # media 0 y desviación 1 por banda (estadísticas de entrenamiento)
+    estandarizar_planos: bool = False  # planos de masa y SFR estandarizados en la cadena
+    sigma_por_imagen: bool = False     # asinh con el σ del cielo de cada imagen, no uno global
+    # --- Aumentación (solo al entrenar) ---
+    desplazamiento_px: int = 0         # desplazamiento aleatorio de hasta ±N píxeles (máx. 5 con margen)
+    # La predicción con TTA (promedio de las 8 simetrías) no es una opción: el ejecutor de
+    # experimentos siempre reporta las dos versiones, con y sin TTA.
+    ruido_max: float = 0.0             # ruido gaussiano añadido: k·σ_cielo, k ~ U(0, ruido_max)
+    psf_max_px: float = 0.0            # desenfoque gaussiano σ ~ U(0, psf_max_px) píxeles
+    prob_aumentacion: float = 0.5      # probabilidad de aplicar ruido y desenfoque a cada imagen
+    # --- Velocidad y programa de entrenamiento ---
+    precision_mixta: bool = False      # autocast en bfloat16 (solo GPU)
+    programa_rapido: bool = False      # coseno con calentamiento y número fijo de épocas
+    epocas_rapido: int = 30
+    calentamiento_epocas: int = 2
+
+    @property
+    def margen_px(self) -> int:
+        """Lado del recorte guardado en caché cuando hay margen de rotación."""
+        # 300·√2 = 424.3 px cubre cualquier giro; +2·5·√2 permite desplazar hasta 5 px.
+        # 440 tiene la misma paridad que 800, así que el recorte queda centrado en CRPIX.
+        return 440 if self.margen_rotacion else 0
+
+    def sufijo(self) -> str:
+        """Sufijo del identificador de la corrida: solo las opciones encendidas."""
+        partes = []
+        if self.margen_rotacion: partes.append("margen")
+        if self.rotacion_bilineal: partes.append("bilin")
+        if self.estandarizar_imagen: partes.append("stdimg")
+        if self.estandarizar_planos: partes.append("stdplanos")
+        if self.sigma_por_imagen: partes.append("sigimg")
+        if self.desplazamiento_px: partes.append(f"desp{self.desplazamiento_px}")
+        if self.ruido_max: partes.append(f"ruido{self.ruido_max:g}")
+        if self.psf_max_px: partes.append(f"psf{self.psf_max_px:g}")
+        if self.precision_mixta: partes.append("bf16")
+        if self.programa_rapido: partes.append(f"rapido{self.epocas_rapido}")
+        return ("_" + "_".join(partes)) if partes else ""
+
+
+@dataclass
 class Experiment:
     """Agrupa rutas, configuración FITS y receta; se guarda como `config.json` de cada corrida."""
     paths: Paths = field(default_factory=Paths)
     fits: FitsConfig = field(default_factory=FitsConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    mejoras: MejorasConfig = field(default_factory=MejorasConfig)
 
     def to_json(self) -> str:
         def conv(o):
