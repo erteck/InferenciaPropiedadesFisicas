@@ -69,6 +69,11 @@ FILAS = [
      "—"),
     ("ratio_R50_z_r", "estructura", "R50 en z / R50 en r", "—", "Gradiente de color expresado como tamaño",
      "—"),
+    *[(f"grumosidad_{b}", "estructura",
+       f"Fracción de la luz en {b} en estructuras de menos de 17 px (4.5″): Σ max(I − mediana₁₇(I), 0) / Σ I, "
+       "fuera del núcleo (r ≥ 16 px) y con el ruido del cielo restado", "—",
+       "Grumos de formación estelar reciente (cúmulos jóvenes en los brazos)",
+       "Preprocesamiento del equipo; Conselice 2003") for b in ("g", "r")],
     # --- contexto ------------------------------------------------------------------
     ("region_norte", "contexto", "1 si Dec ≥ 32.375° (BASS/MzLS), 0 si es DECam", "—",
      "Otro telescopio, otros filtros y otra profundidad", "Dey et al. 2019"),
