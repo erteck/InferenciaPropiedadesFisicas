@@ -72,6 +72,7 @@ class TransformadorAsimetria(BaseEstimator, TransformerMixin):
                 v[ok] = stats.boxcox(np.clip(v[ok], 1e-12, None), lmbda=lam)
             elif m == "yeo-johnson":
                 v[ok] = _yj(v[ok], lam)
+            v[~np.isfinite(v)] = np.nan       # un valor infinito se trata como ausente (lo imputa el paso siguiente)
             X[c] = v
         return X
 

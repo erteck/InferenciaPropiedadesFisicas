@@ -220,3 +220,9 @@ def test_transformacion_se_ajusta_en_train_y_se_aplica_igual():
     t = TransformadorAsimetria().fit(tr)
     out = t.transform(va)
     assert np.isnan(out.x[2]) and np.isfinite(out.x[:2]).all()
+
+
+def test_transformacion_nunca_devuelve_infinitos():
+    tr = pd.DataFrame({"x": np.r_[np.zeros(990), np.linspace(1, 1e6, 10)]})
+    out = TransformadorAsimetria().fit(tr).transform(pd.DataFrame({"x": [np.inf, 1e12, 0.0]}))
+    assert not np.isinf(out.x).any()
