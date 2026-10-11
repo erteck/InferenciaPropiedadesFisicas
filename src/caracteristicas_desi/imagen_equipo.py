@@ -67,8 +67,11 @@ def fondo_2d(img: np.ndarray, caja: int, mascara: np.ndarray | None = None) -> B
     """Mapa del cielo con mediana por cajas y recorte sigma (3σ), como en el Preprocesamiento."""
     sc = SigmaClip(sigma=3.0)
     filtro = 3
+    # Con máscara, una caja puede quedar muy cubierta por la galaxia o por estrellas; se acepta hasta
+    # un 50 % enmascarado (por omisión photutils descarta las cajas con más del 10 %).
     return Background2D(img, (caja, caja), filter_size=(filtro, filtro), sigma_clip=sc,
-                        bkg_estimator=MedianBackground(sigma_clip=sc), mask=mascara)
+                        bkg_estimator=MedianBackground(sigma_clip=sc), mask=mascara,
+                        exclude_percentile=50.0 if mascara is not None else 10.0)
 
 
 def mascara_gaussiana(img: np.ndarray, rms, nsigma: float = 1.5) -> tuple[np.ndarray, np.ndarray]:
@@ -170,7 +173,10 @@ def rejilla_normalizaciones(X: np.ndarray, ids, norm_katachi=None) -> pd.DataFra
     for x, m in zip(X, ids):
         x = np.asarray(x, np.float32)
         col = colapsos(x)
-        galaxia, _, _ = segmentar(col["promedio sin cielo"])
+        try:
+            galaxia, _, _ = segmentar(col["promedio sin cielo"])
+        except Exception:      # una galaxia que no se puede segmentar no detiene la comparación
+            continue
         for nombre_c, img in col.items():
             for nombre_i, intervalo in _intervalos().items():
                 for est in ("lineal", "log", "asinh"):
