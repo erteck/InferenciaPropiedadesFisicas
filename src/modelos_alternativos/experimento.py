@@ -153,7 +153,7 @@ def registrar_eleccion_antes_de_prueba(contexto: ContextoDatos, ruta: Path, elec
             registro("AVISO: el modelo elegido cambió desde la primera apertura; esta evaluación no es una prueba independiente.")
         return previo
     contexto.guardia.write_json(ruta, registro_nuevo)
-    registro(f"Elección registrada antes de abrir la prueba: {ruta}")
+    registro("Elección registrada antes de abrir la prueba.")
     return registro_nuevo
 
 
