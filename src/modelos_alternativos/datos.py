@@ -181,9 +181,13 @@ class ConjuntoEnGPU:
     (por ejemplo, el redshift). Con k = 0 el modelo usa solo la imagen.
     """
 
-    def __init__(self, imagenes: np.ndarray, escalares: np.ndarray | None, etiquetas: np.ndarray, dispositivo):
+    def __init__(self, imagenes, escalares: np.ndarray | None, etiquetas: np.ndarray, dispositivo):
+        """`imagenes` puede ser un arreglo de NumPy o un tensor que ya está en el dispositivo (se reutiliza sin copiar)."""
         n = imagenes.shape[0]
-        self.imagenes = torch.from_numpy(np.ascontiguousarray(imagenes)).to(dispositivo)
+        if isinstance(imagenes, torch.Tensor):
+            self.imagenes = imagenes.to(dispositivo)
+        else:
+            self.imagenes = torch.from_numpy(np.ascontiguousarray(imagenes)).to(dispositivo)
         escalares = np.zeros((n, 0), np.float32) if escalares is None else np.asarray(escalares, np.float32).reshape(n, -1)
         self.escalares = torch.as_tensor(escalares, device=dispositivo)
         self.etiquetas = torch.as_tensor(np.asarray(etiquetas, np.float32).reshape(n, -1), device=dispositivo)

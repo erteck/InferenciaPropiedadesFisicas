@@ -1,8 +1,12 @@
 """Contexto de datos compartido por los cuadernos de modelos alternativos.
 
 `preparar_contexto` hace, una sola vez y con las galaxias de entrenamiento, todo lo que los
-modelos necesitan: muestra, imágenes, transformación GRZ, estandarizadores y los tres conjuntos en
-la GPU. Las propiedades a predecir y las variables escalares auxiliares son parámetros.
+modelos necesitan: muestra, imágenes, transformación GRZ y estandarización de las etiquetas.
+
+Las variables escalares que acompañan a la imagen no se fijan aquí: cada corrida elige las suyas
+(por ejemplo, ninguna, o un redshift predicho desde la imagen). Cada columna escalar tiene su propio
+estandarizador ajustado con entrenamiento, y las columnas nuevas se agregan con `agregar_columna`.
+Las imágenes de cada partición se suben a la GPU una sola vez y las comparten todas las corridas.
 """
 from __future__ import annotations
 
@@ -26,18 +30,18 @@ from .datos import (OBJETIVOS, PARTICIONES, ConjuntoEnGPU, EstandarizadorEscalar
 
 @dataclass
 class ContextoDatos:
-    rutas: Paths
+    rutas: Paths | None
     guardia: WriteGuard
     muestra: pd.DataFrame
     excluidas: pd.DataFrame
     imagenes: np.ndarray                         # (N, 3, 300, 300) float16, orden g, r, z
     indices: dict
     objetivos: tuple
-    variables_escalares: tuple
     transformacion_grz: TransformacionGRZ
     estandarizador_etiquetas: EstandarizadorEscalar
-    estandarizador_escalares: EstandarizadorEscalar | None
-    conjuntos: dict = field(default_factory=dict)  # partición → ConjuntoEnGPU
+    estandarizadores_escalares: dict = field(default_factory=dict)   # columna → EstandarizadorEscalar
+    _imagenes_gpu: dict = field(default_factory=dict, repr=False)    # (partición, dispositivo) → tensor
+    _conjuntos: dict = field(default_factory=dict, repr=False)       # (partición, dispositivo, variables) → ConjuntoEnGPU
 
     @property
     def desviacion_etiquetas_entrenamiento(self) -> np.ndarray:
@@ -49,30 +53,64 @@ class ContextoDatos:
     def a_escala_original(self, prediccion_estandarizada: np.ndarray) -> np.ndarray:
         return self.estandarizador_etiquetas.invertir(prediccion_estandarizada)
 
-    def conjunto(self, particion: str, dispositivo) -> ConjuntoEnGPU:
-        """Crea (o reutiliza) el conjunto de una partición en el dispositivo."""
-        if particion not in self.conjuntos:
-            idx = self.indices[particion]
-            escalares = None
-            if self.variables_escalares:
-                escalares = self.estandarizador_escalares.transformar(
-                    self.muestra.iloc[idx][list(self.variables_escalares)].to_numpy(float))
+    # ------------------------------------------------------------------ variables escalares
+    def estandarizador_de(self, columna: str) -> EstandarizadorEscalar:
+        """Estandarizador de una columna, ajustado con las galaxias de entrenamiento (se crea la primera vez)."""
+        if columna not in self.estandarizadores_escalares:
+            valores = self.muestra.iloc[self.indices["Train"]][columna].to_numpy(float)
+            if not np.isfinite(valores).all():
+                raise ValueError(f"La columna {columna} tiene valores no finitos en entrenamiento")
+            self.estandarizadores_escalares[columna] = EstandarizadorEscalar.ajustar(valores)
+        return self.estandarizadores_escalares[columna]
+
+    def escalares_estandarizados(self, particion: str, variables) -> np.ndarray:
+        idx = self.indices[particion]
+        if not variables:
+            return np.zeros((len(idx), 0), np.float32)
+        columnas = [self.estandarizador_de(v).transformar(self.muestra.iloc[idx][v].to_numpy(float)) for v in variables]
+        return np.concatenate(columnas, 1).astype(np.float32)
+
+    def agregar_columna(self, nombre: str, valores_por_particion: dict) -> None:
+        """Agrega una columna a la muestra (p. ej., una variable predicha desde la imagen).
+
+        `valores_por_particion` = {partición: arreglo en el orden de `indices[partición]`}. Si la
+        columna ya existía, se reemplaza y su estandarizador se vuelve a ajustar con entrenamiento.
+        """
+        columna = np.full(len(self.muestra), np.nan)
+        for particion, valores in valores_por_particion.items():
+            valores = np.asarray(valores, float).ravel()
+            if len(valores) != len(self.indices[particion]):
+                raise ValueError(f"{nombre}: {len(valores)} valores para {len(self.indices[particion])} galaxias de {particion}")
+            columna[self.indices[particion]] = valores
+        self.muestra[nombre] = columna
+        self.estandarizadores_escalares.pop(nombre, None)
+        self._conjuntos = {k: v for k, v in self._conjuntos.items() if nombre not in k[2]}
+
+    # ------------------------------------------------------------------ conjuntos en la GPU
+    def conjunto(self, particion: str, dispositivo, variables_escalares=()) -> ConjuntoEnGPU:
+        """Conjunto de una partición con las variables escalares pedidas; las imágenes se comparten."""
+        variables = tuple(variables_escalares)
+        clave = (particion, str(dispositivo), variables)
+        if clave not in self._conjuntos:
+            clave_imagenes = (particion, str(dispositivo))
+            if clave_imagenes not in self._imagenes_gpu:
+                self._imagenes_gpu[clave_imagenes] = torch.from_numpy(
+                    np.ascontiguousarray(self.imagenes[self.indices[particion]])).to(dispositivo)
             etiquetas = self.estandarizador_etiquetas.transformar(self.etiquetas(particion))
-            self.conjuntos[particion] = ConjuntoEnGPU(self.imagenes[idx], escalares, etiquetas, dispositivo)
-        return self.conjuntos[particion]
+            self._conjuntos[clave] = ConjuntoEnGPU(self._imagenes_gpu[clave_imagenes],
+                                                   self.escalares_estandarizados(particion, variables), etiquetas, dispositivo)
+        return self._conjuntos[clave]
 
     def resumen(self) -> dict:
         return {"galaxias": len(self.muestra), **{p: int(len(i)) for p, i in self.indices.items()},
                 "excluidas": int(len(self.excluidas)), "objetivos": list(self.objetivos),
-                "variables_escalares": list(self.variables_escalares),
                 "transformacion_grz": self.transformacion_grz.a_dict(),
                 "estandarizador_etiquetas": self.estandarizador_etiquetas.a_dict(),
-                "estandarizador_escalares": None if self.estandarizador_escalares is None
-                else self.estandarizador_escalares.a_dict()}
+                "estandarizadores_escalares": {k: v.a_dict() for k, v in self.estandarizadores_escalares.items()}}
 
 
-def preparar_contexto(base_drive: Path, carpeta_resultados: str, objetivos=OBJETIVOS, variables_escalares=("redshift",),
-                      limite_galaxias: int = 0, registro=print) -> ContextoDatos:
+def preparar_contexto(base_drive: Path, carpeta_resultados: str, objetivos=OBJETIVOS, limite_galaxias: int = 0,
+                      registro=print) -> ContextoDatos:
     """Lee el catálogo y la caché de imágenes de Drive y ajusta las transformaciones con entrenamiento.
 
     Escribe solo dentro de `base_drive / carpeta_resultados`; el catálogo y los FITS son de solo lectura.
@@ -119,7 +157,5 @@ def preparar_contexto(base_drive: Path, carpeta_resultados: str, objetivos=OBJET
     entrenamiento = indices["Train"]
     transformacion = TransformacionGRZ.ajustar(imagenes, entrenamiento)
     estandarizador_etiquetas = EstandarizadorEscalar.ajustar(muestra.iloc[entrenamiento][list(objetivos)].to_numpy(float))
-    estandarizador_escalares = (EstandarizadorEscalar.ajustar(muestra.iloc[entrenamiento][list(variables_escalares)].to_numpy(float))
-                                if variables_escalares else None)
-    return ContextoDatos(rutas, guardia, muestra, excluidas, imagenes, indices, tuple(objetivos), tuple(variables_escalares),
-                         transformacion, estandarizador_etiquetas, estandarizador_escalares)
+    return ContextoDatos(rutas, guardia, muestra, excluidas, imagenes, indices, tuple(objetivos), transformacion,
+                         estandarizador_etiquetas)

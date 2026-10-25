@@ -246,9 +246,8 @@ def _contexto_sintetico(tmp_path, n=24):
     imagenes = _imagenes(n)
     idx = D.indices_por_particion(muestra)
     return ContextoDatos(None, WriteGuard(tmp_path, [tmp_path / "ro"]), muestra, pd.DataFrame(), imagenes, idx,
-                         D.OBJETIVOS, ("redshift",), D.TransformacionGRZ.ajustar(imagenes, idx["Train"], 64),
-                         D.EstandarizadorEscalar.ajustar(muestra.iloc[idx["Train"]][list(D.OBJETIVOS)].to_numpy()),
-                         D.EstandarizadorEscalar.ajustar(muestra.iloc[idx["Train"]][["redshift"]].to_numpy()))
+                         D.OBJETIVOS, D.TransformacionGRZ.ajustar(imagenes, idx["Train"], 64),
+                         D.EstandarizadorEscalar.ajustar(muestra.iloc[idx["Train"]][list(D.OBJETIVOS)].to_numpy()))
 
 
 def test_ejecutar_corrida_entrena_guarda_y_reutiliza(tmp_path):
@@ -257,8 +256,11 @@ def test_ejecutar_corrida_entrena_guarda_y_reutiliza(tmp_path):
     espec = A.EspecificacionModelo(**CNN)
     cfg = E.ConfiguracionEntrenamiento(epocas=2, tamano_lote=8, precision_mixta=False, canales_ultimos=False)
     entrada = {"representacion": "grz_estandarizado", "lado": 32}
-    r1 = X.ejecutar_corrida(ctx, tmp_path / "modelo", "prueba", espec, cfg, entrada, CPU, registro=lambda *_: None)
-    r2 = X.ejecutar_corrida(ctx, tmp_path / "modelo", "prueba", espec, cfg, entrada, CPU, registro=lambda *_: None)
+    r1 = X.ejecutar_corrida(ctx, tmp_path / "modelo", "prueba", espec, cfg, entrada, CPU, ("redshift",), registro=lambda *_: None)
+    r2 = X.ejecutar_corrida(ctx, tmp_path / "modelo", "prueba", espec, cfg, entrada, CPU, ("redshift",), registro=lambda *_: None)
+    solo_imagen = X.ejecutar_corrida(ctx, tmp_path / "modelo", "prueba", espec, cfg, entrada, CPU, (), registro=lambda *_: None)
+    assert solo_imagen.identificador != r1.identificador and solo_imagen.modelo.n_escalares == 0 and r1.modelo.n_escalares == 1
+    assert X.predicciones_originales(ctx, solo_imagen, "Validation", CPU).shape == (len(ctx.indices["Validation"]), 3)
     assert not r1.reutilizada and r2.reutilizada and r1.identificador == r2.identificador
     p1 = X.predicciones_originales(ctx, r1, "Validation", CPU)
     np.testing.assert_allclose(p1, X.predicciones_originales(ctx, r2, "Validation", CPU), rtol=1e-5, atol=1e-6)
@@ -294,14 +296,78 @@ def test_modelo_congelado_equivale_a_cabeza_sobre_representaciones(tmp_path, agr
     np.testing.assert_array_equal(de_disco["Validation"], reps["Validation"])        # la caché se lee de vuelta completa
     cfg = R.ConfiguracionCabeza(epocas=5, tamano_lote=8)
     torch.manual_seed(0)   # mismos pesos aleatorios del extractor que en la extracción
-    corrida = X.ejecutar_cabeza_congelada(ctx, tmp_path / "m", "congelado", espec, cfg, entrada, reps, CPU, registro=lambda *_: None)
-    validacion = ctx.conjunto("Validation", CPU)
+    corrida = X.ejecutar_cabeza_congelada(ctx, tmp_path / "m", "congelado", espec, cfg, entrada, reps, CPU, ("redshift",),
+                                          registro=lambda *_: None)
+    validacion = X.conjunto_de(ctx, corrida, "Validation", CPU)
     pred_modelo = E.predecir(corrida.modelo, corrida.preparador, validacion, precision_mixta=False)
     propias = R.extraer_representaciones(corrida.modelo.extractor, corrida.preparador, validacion)   # vectores del extractor del modelo
     res = R.cargar_cabeza(corrida.carpeta / "cabeza.pt", propias.shape[1] + 1, 3, cfg)
     np.testing.assert_allclose(pred_modelo, res.predecir(propias, validacion.escalares.numpy()), rtol=1e-4, atol=1e-5)
-    solo_cabeza = X.ejecutar_cabeza_congelada(ctx, tmp_path / "m", "busqueda", espec, cfg, entrada, reps, CPU, guardar=False,
+    solo_cabeza = X.ejecutar_cabeza_congelada(ctx, tmp_path / "m", "busqueda", espec, cfg, entrada, reps, CPU, (), guardar=False,
                                               construir_modelo_imagen=False, registro=lambda *_: None)
     assert solo_cabeza.modelo is None and np.isfinite(solo_cabeza.resumen["mejor_criterio_validacion"])
-    otra = X.ejecutar_cabeza_congelada(ctx, tmp_path / "m", "congelado", espec, cfg, entrada, reps, CPU, registro=lambda *_: None)
+    otra = X.ejecutar_cabeza_congelada(ctx, tmp_path / "m", "congelado", espec, cfg, entrada, reps, CPU, ("redshift",),
+                                       registro=lambda *_: None)
     assert otra.reutilizada and corrida.resumen["parametros_entrenables"] < corrida.resumen["parametros_totales"]
+
+
+# ------------------------------------------------------------------ contexto y modelo en dos etapas
+def test_columnas_escalares_por_corrida_y_estandarizacion_con_entrenamiento(tmp_path):
+    ctx = _contexto_sintetico(tmp_path)
+    tr = ctx.indices["Train"]
+    z = ctx.escalares_estandarizados("Train", ("redshift",))
+    assert abs(z.mean()) < 1e-5 and abs(z.std() - 1) < 1e-4
+    assert ctx.escalares_estandarizados("Validation", ()).shape == (len(ctx.indices["Validation"]), 0)
+    a, b = ctx.conjunto("Train", CPU, ()), ctx.conjunto("Train", CPU, ("redshift",))
+    assert a.imagenes.data_ptr() == b.imagenes.data_ptr()           # las imágenes se comparten, no se duplican
+    valores = {p: np.arange(len(i), dtype=float) + 1 for p, i in ctx.indices.items()}
+    ctx.agregar_columna("nueva", valores)
+    est = ctx.estandarizador_de("nueva")
+    assert est.media[0] == pytest.approx(np.mean(valores["Train"]))  # solo entrenamiento
+    with pytest.raises(ValueError):
+        ctx.agregar_columna("mal", {"Train": np.ones(len(tr) + 1)})
+
+
+def test_etapa1_predice_fuera_de_particion_y_no_usa_validacion(tmp_path, monkeypatch):
+    from src.modelos_alternativos import variable_predicha as VP
+    ctx = _contexto_sintetico(tmp_path, n=40)
+    espec = A.EspecificacionModelo(**CNN, estrategia_ajuste="congelado")
+    entrada = {"representacion": "grz_estandarizado", "lado": 32}
+    cfg = R.ConfiguracionCabeza(epocas=3, tamano_lote=8, unidades_ocultas=16)
+    vistos = []
+    original = VP._ajustar_y_predecir
+    def espia(r_ajuste, y_ajuste, r_predecir, *args, **kw):
+        vistos.append((r_ajuste.copy(), r_predecir.copy()))
+        return original(r_ajuste, y_ajuste, r_predecir, *args, **kw)
+    monkeypatch.setattr(VP, "_ajustar_y_predecir", espia)
+    tabla = VP.predecir_variable_desde_imagen(ctx, tmp_path / "z", "redshift", "redshift_predicho", espec, entrada, cfg, CPU,
+                                              n_particiones=4, registro=lambda *_: None)
+    assert len(vistos) == 5                                            # 4 particiones + modelo completo
+    for r_ajuste, r_predecir in vistos[:4]:                            # ninguna galaxia predicha estaba en el ajuste
+        assert not any((r_ajuste == fila).all(1).any() for fila in r_predecir)
+    entrenamiento = tabla[tabla.particion == "Train"]
+    assert set(entrenamiento.origen) == {"fuera de partición"} and entrenamiento.pliegue.nunique() == 4
+    assert set(tabla[tabla.particion != "Train"].origen) == {"modelo con todo entrenamiento"}
+    assert np.isfinite(ctx.muestra.redshift_predicho).all() and (ctx.muestra.redshift_predicho > 0).all()
+    # Cambiar el redshift real de validación y prueba no cambia nada: no interviene en ningún ajuste
+    ctx2 = _contexto_sintetico(tmp_path / "otro", n=40)
+    fuera = ctx2.indices["Validation"].tolist() + ctx2.indices["Test"].tolist()
+    ctx2.muestra.loc[fuera, "redshift"] = 9.9
+    monkeypatch.setattr(VP, "_ajustar_y_predecir", original)
+    tabla2 = VP.predecir_variable_desde_imagen(ctx2, tmp_path / "otro" / "z2", "redshift", "redshift_predicho", espec, entrada, cfg, CPU,
+                                               n_particiones=4, registro=lambda *_: None)
+    tabla3 = VP.predecir_variable_desde_imagen(_contexto_sintetico(tmp_path / "otro3", n=40), tmp_path / "otro3" / "z3", "redshift",
+                                               "redshift_predicho", espec, entrada, cfg, CPU, n_particiones=4, registro=lambda *_: None)
+    np.testing.assert_allclose(tabla2.redshift_predicho.to_numpy(), tabla3.redshift_predicho.to_numpy(), rtol=1e-5)
+    # Se reutiliza la estimación guardada
+    mensajes = []
+    VP.predecir_variable_desde_imagen(ctx, tmp_path / "z", "redshift", "redshift_predicho", espec, entrada, cfg, CPU,
+                                      n_particiones=4, registro=mensajes.append)
+    assert any("se reutiliza" in m for m in mensajes)
+
+
+def test_metricas_redshift():
+    from src.modelos_alternativos.variable_predicha import metricas_redshift
+    z = np.array([0.02, 0.03, 0.05, 0.1])
+    m = metricas_redshift(z, z * 1.1)
+    assert m["error_relativo_mediano"] == pytest.approx(0.1) and m["sesgo_dz"] > 0 and m["atipicos_dz_mayor_0.05"] == 0

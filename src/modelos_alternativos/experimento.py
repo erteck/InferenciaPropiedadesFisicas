@@ -37,9 +37,11 @@ def normalizacion_rgb_del_extractor(nombre_extractor: str) -> tuple:
     return tuple(cfg.mean), tuple(cfg.std)
 
 
-def identificador_corrida(prefijo: str, espec: EspecificacionModelo, config: ConfiguracionEntrenamiento, entrada: dict) -> str:
+def identificador_corrida(prefijo: str, espec: EspecificacionModelo, config: ConfiguracionEntrenamiento, entrada: dict,
+                          variables_escalares=()) -> str:
     """Nombre legible más una huella corta de toda la configuración: dos configuraciones distintas no comparten carpeta."""
-    contenido = json.dumps({"espec": espec.a_dict(), "config": config.a_dict(), "entrada": entrada}, sort_keys=True)
+    contenido = json.dumps({"espec": espec.a_dict(), "config": config.a_dict(), "entrada": entrada,
+                            "variables_escalares": list(variables_escalares)}, sort_keys=True)
     return f"{prefijo}_semilla{config.semilla}_{hashlib.sha1(contenido.encode()).hexdigest()[:8]}"
 
 
@@ -52,50 +54,63 @@ class ResultadoCorrida:
     resumen: dict
     historial: pd.DataFrame
     reutilizada: bool
+    variables_escalares: tuple = ()
+
+
+def conjunto_de(contexto: ContextoDatos, corrida: "ResultadoCorrida", particion: str, dispositivo):
+    """Conjunto de una partición con las variables escalares que usa esa corrida."""
+    return contexto.conjunto(particion, dispositivo, corrida.variables_escalares)
 
 
 def ejecutar_corrida(contexto: ContextoDatos, carpeta_modelo: Path, prefijo: str, espec: EspecificacionModelo,
-                     config: ConfiguracionEntrenamiento, entrada: dict, dispositivo, al_terminar_epoca=None,
-                     guardar: bool = True, registro=print) -> ResultadoCorrida:
-    """Entrena una corrida o la recupera si ya terminó. Guarda pesos, historial y resumen en Drive."""
+                     config: ConfiguracionEntrenamiento, entrada: dict, dispositivo, variables_escalares=(),
+                     al_terminar_epoca=None, guardar: bool = True, registro=print) -> ResultadoCorrida:
+    """Entrena una corrida o la recupera si ya terminó. Guarda pesos, historial y resumen en Drive.
+
+    `variables_escalares` son las columnas de la muestra que acompañan a la imagen (puede ser vacía).
+    """
+    variables_escalares = tuple(variables_escalares)
     media_rgb, desviacion_rgb = (normalizacion_rgb_del_extractor(espec.nombre_extractor)
                                  if entrada.get("representacion") == "rgb_lupton" else (None, None))
     preparador = crear_preparador(contexto, entrada, media_rgb, desviacion_rgb)
-    n_escalares, n_salidas = len(contexto.variables_escalares), len(contexto.objetivos)
-    identificador = identificador_corrida(prefijo, espec, config, entrada)
+    n_escalares, n_salidas = len(variables_escalares), len(contexto.objetivos)
+    identificador = identificador_corrida(prefijo, espec, config, entrada, variables_escalares)
     carpeta = Path(carpeta_modelo) / "corridas" / identificador
     if guardar and corrida_terminada(carpeta):
         modelo, resumen, historial = cargar_corrida(carpeta, construir_modelo(espec, n_escalares, n_salidas))
         registro(f"[{identificador}] ya terminada · se recupera (mejor época {resumen['mejor_epoca']})")
-        return ResultadoCorrida(identificador, carpeta, modelo.to(dispositivo), preparador, resumen, historial, True)
+        return ResultadoCorrida(identificador, carpeta, modelo.to(dispositivo), preparador, resumen, historial, True,
+                                variables_escalares)
     modelo = construir_modelo(espec, n_escalares, n_salidas)
     parametros = contar_parametros(modelo)
     registro(f"[{identificador}] {parametros['parametros_entrenables'] / 1e6:.1f} M de parámetros entrenables "
              f"de {parametros['parametros_totales'] / 1e6:.1f} M")
-    resultado = entrenar(modelo, preparador, contexto.conjunto("Train", dispositivo), contexto.conjunto("Validation", dispositivo),
-                         config, al_terminar_epoca=al_terminar_epoca, registro=registro)
+    resultado = entrenar(modelo, preparador, contexto.conjunto("Train", dispositivo, variables_escalares),
+                         contexto.conjunto("Validation", dispositivo, variables_escalares), config,
+                         al_terminar_epoca=al_terminar_epoca, registro=registro)
     resumen = {"identificador": identificador, "especificacion": espec.a_dict(), "configuracion": config.a_dict(),
-               "entrada": entrada, **parametros, "mejor_epoca": resultado.mejor_epoca,
+               "entrada": entrada, "variables_escalares": list(variables_escalares), **parametros,
+               "mejor_epoca": resultado.mejor_epoca,
                "mejor_criterio_validacion": resultado.mejor_criterio_validacion,
                "minutos_entrenamiento": resultado.segundos / 60, "memoria_maxima_gb": resultado.memoria_maxima_gb,
                "fecha_utc": datetime.now(timezone.utc).isoformat()}
     if guardar:
         guardar_corrida(contexto.guardia, carpeta, resultado, resumen)
-    return ResultadoCorrida(identificador, carpeta, modelo, preparador, resumen, resultado.historial, False)
+    return ResultadoCorrida(identificador, carpeta, modelo, preparador, resumen, resultado.historial, False, variables_escalares)
 
 
 def predicciones_originales(contexto: ContextoDatos, corrida: ResultadoCorrida, particion: str, dispositivo,
                             tta: bool = False) -> np.ndarray:
     """Predicciones de una partición en la escala original de cada propiedad."""
     canales_ultimos = corrida.resumen.get("configuracion", {}).get("canales_ultimos", False)
-    estandarizadas = predecir(corrida.modelo, corrida.preparador, contexto.conjunto(particion, dispositivo), tta=tta,
+    estandarizadas = predecir(corrida.modelo, corrida.preparador, conjunto_de(contexto, corrida, particion, dispositivo), tta=tta,
                               canales_ultimos=canales_ultimos)
     return contexto.a_escala_original(estandarizadas)
 
 
 def tiempo_inferencia_ms(contexto: ContextoDatos, corrida: ResultadoCorrida, dispositivo, n_imagenes: int = 256) -> float:
     """Milisegundos por galaxia al predecir sin TTA (después de un lote de calentamiento)."""
-    conjunto = contexto.conjunto("Validation", dispositivo).subconjunto(n_imagenes)
+    conjunto = conjunto_de(contexto, corrida, "Validation", dispositivo).subconjunto(n_imagenes)
     canales_ultimos = corrida.resumen.get("configuracion", {}).get("canales_ultimos", False)
     predecir(corrida.modelo, corrida.preparador, conjunto, tamano_lote=64, canales_ultimos=canales_ultimos)   # calentamiento
     if dispositivo.type == "cuda":
@@ -208,7 +223,7 @@ def seleccionar_agregacion(representaciones: np.ndarray, agregacion: str, es_de_
 
 
 def ejecutar_cabeza_congelada(contexto: ContextoDatos, carpeta_modelo: Path, prefijo: str, espec: EspecificacionModelo,
-                              config_cabeza, entrada: dict, representaciones: dict, dispositivo,
+                              config_cabeza, entrada: dict, representaciones: dict, dispositivo, variables_escalares=(),
                               guardar: bool = True, construir_modelo_imagen: bool = True, registro=print) -> ResultadoCorrida:
     """Entrena (o recupera) la cabeza sobre representaciones congeladas y la convierte en un modelo de imagen.
 
@@ -220,17 +235,17 @@ def ejecutar_cabeza_congelada(contexto: ContextoDatos, carpeta_modelo: Path, pre
     from .arquitecturas import ModeloRegresionImagen, crear_extractor
     from .representaciones import cargar_cabeza, entrenar_cabeza, guardar_cabeza, plegar_estandarizacion
 
+    variables_escalares = tuple(variables_escalares)
     espec = EspecificacionModelo(**{**espec.a_dict(), "capas_lora": tuple(espec.capas_lora), "estrategia_ajuste": "congelado"})
-    contenido = json.dumps({"espec": espec.a_dict(), "cabeza": config_cabeza.a_dict(), "entrada": entrada}, sort_keys=True)
+    contenido = json.dumps({"espec": espec.a_dict(), "cabeza": config_cabeza.a_dict(), "entrada": entrada,
+                            "variables_escalares": list(variables_escalares)}, sort_keys=True)
     identificador = f"{prefijo}_semilla{config_cabeza.semilla}_{hashlib.sha1(contenido.encode()).hexdigest()[:8]}"
     carpeta = Path(carpeta_modelo) / "corridas" / identificador
-    escalares = {p: (contexto.estandarizador_escalares.transformar(
-        contexto.muestra.iloc[contexto.indices[p]][list(contexto.variables_escalares)].to_numpy(float))
-        if contexto.variables_escalares else np.zeros((len(contexto.indices[p]), 0), np.float32)) for p in ("Train", "Validation")}
+    escalares = {p: contexto.escalares_estandarizados(p, variables_escalares) for p in ("Train", "Validation")}
     etiquetas = {p: contexto.estandarizador_etiquetas.transformar(contexto.etiquetas(p)) for p in ("Train", "Validation")}
     es_de_tokens = es_extractor_de_tokens(espec.nombre_extractor)
     r = {p: seleccionar_agregacion(representaciones[p], espec.agregacion_tokens, es_de_tokens) for p in ("Train", "Validation")}
-    dimension = r["Train"].shape[1] + len(contexto.variables_escalares)
+    dimension = r["Train"].shape[1] + len(variables_escalares)
     reutilizada = guardar and (carpeta / "cabeza.pt").exists()
     if reutilizada:
         resultado = cargar_cabeza(carpeta / "cabeza.pt", dimension, len(contexto.objetivos), config_cabeza)
@@ -240,7 +255,7 @@ def ejecutar_cabeza_congelada(contexto: ContextoDatos, carpeta_modelo: Path, pre
                                     etiquetas["Validation"], config_cabeza, dispositivo)
     modelo, parametros = None, {"parametros_totales": None}
     if construir_modelo_imagen:
-        modelo = ModeloRegresionImagen(crear_extractor(espec), len(contexto.variables_escalares), len(contexto.objetivos),
+        modelo = ModeloRegresionImagen(crear_extractor(espec), len(variables_escalares), len(contexto.objetivos),
                                        config_cabeza.unidades_ocultas, config_cabeza.dropout)
         modelo.cabeza = plegar_estandarizacion(resultado)
         modelo.to(dispositivo).eval()
@@ -249,7 +264,8 @@ def ejecutar_cabeza_congelada(contexto: ContextoDatos, carpeta_modelo: Path, pre
                          if entrada.get("representacion") == "rgb_lupton" else (None, None))
     resumen = {"identificador": identificador, "especificacion": espec.a_dict(),
                "configuracion": {**config_cabeza.a_dict(), "canales_ultimos": False}, "configuracion_cabeza": config_cabeza.a_dict(),
-               "entrada": entrada, **parametros, "parametros_entrenables": int(sum(p.numel() for p in resultado.cabeza.parameters())),
+               "entrada": entrada, "variables_escalares": list(variables_escalares), **parametros,
+               "parametros_entrenables": int(sum(p.numel() for p in resultado.cabeza.parameters())),
                "mejor_epoca": resultado.mejor_epoca, "mejor_criterio_validacion": resultado.mejor_criterio_validacion,
                "minutos_cabeza": resultado.segundos / 60,
                "minutos_extraccion": representaciones.get("segundos_extraccion", 0.0) / 60,
@@ -260,4 +276,4 @@ def ejecutar_cabeza_congelada(contexto: ContextoDatos, carpeta_modelo: Path, pre
         contexto.guardia.write_json(carpeta / "resumen.json", resumen, allow_replace=True)
     historial = pd.DataFrame({"epoca": [resultado.mejor_epoca], "criterio_validacion": [resultado.mejor_criterio_validacion]})
     return ResultadoCorrida(identificador, carpeta, modelo, crear_preparador(contexto, entrada, media, desviacion), resumen, historial,
-                            reutilizada)
+                            reutilizada, variables_escalares)
