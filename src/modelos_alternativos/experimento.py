@@ -159,11 +159,13 @@ def representaciones_en_cache(contexto: ContextoDatos, carpeta_modelo: Path, esp
                                                "agregacion_tokens": "cls_y_promedio", "estrategia_ajuste": "congelado"})
     nombre = f"{espec.nombre_extractor.replace('/', '_')}_{entrada.get('representacion')}_{entrada.get('lado')}{entrada.get('modo_lado', 'recorte')}"
     carpeta = Path(carpeta_modelo) / "representaciones"
-    salida, extractor = {}, None
+    salida, extractor, segundos = {}, None, 0.0
     for particion in particiones:
         ruta = carpeta / f"{nombre}_{particion}.npy"
+        ruta_tiempo = ruta.with_suffix(".json")
         if ruta.exists():
             salida[particion] = np.load(ruta)
+            segundos += json.loads(ruta_tiempo.read_text())["segundos"] if ruta_tiempo.exists() else 0.0
             continue
         if extractor is None:
             extractor = crear_extractor(espec_extraccion).to(dispositivo)
@@ -173,11 +175,15 @@ def representaciones_en_cache(contexto: ContextoDatos, carpeta_modelo: Path, esp
         inicio = time.time()
         salida[particion] = extraer_representaciones(extractor, preparador, contexto.conjunto(particion, dispositivo))
         contexto.guardia.mkdir(carpeta)
+        duracion = time.time() - inicio
+        segundos += duracion
         contexto.guardia.write(ruta, lambda f, a=salida[particion]: _guardar_npy(f, a), allow_replace=True)
-        registro(f"[{nombre}] {particion}: {salida[particion].shape} en {time.time() - inicio:.0f} s")
+        contexto.guardia.write_json(ruta_tiempo, {"segundos": duracion, "forma": list(salida[particion].shape)}, allow_replace=True)
+        registro(f"[{nombre}] {particion}: {salida[particion].shape} en {duracion:.0f} s")
     del extractor
     if dispositivo.type == "cuda":
         torch.cuda.empty_cache()
+    salida["segundos_extraccion"] = segundos       # tiempo total de extracción de estas particiones
     return salida
 
 
@@ -245,7 +251,10 @@ def ejecutar_cabeza_congelada(contexto: ContextoDatos, carpeta_modelo: Path, pre
                "configuracion": {**config_cabeza.a_dict(), "canales_ultimos": False}, "configuracion_cabeza": config_cabeza.a_dict(),
                "entrada": entrada, **parametros, "parametros_entrenables": int(sum(p.numel() for p in resultado.cabeza.parameters())),
                "mejor_epoca": resultado.mejor_epoca, "mejor_criterio_validacion": resultado.mejor_criterio_validacion,
-               "minutos_entrenamiento": resultado.segundos / 60}
+               "minutos_cabeza": resultado.segundos / 60,
+               "minutos_extraccion": representaciones.get("segundos_extraccion", 0.0) / 60,
+               # Costo comparable con un modelo ajustado: extraer las representaciones más entrenar la cabeza
+               "minutos_entrenamiento": (resultado.segundos + representaciones.get("segundos_extraccion", 0.0)) / 60}
     if guardar and not reutilizada:
         guardar_cabeza(contexto.guardia, carpeta / "cabeza.pt", resultado, resumen)
         contexto.guardia.write_json(carpeta / "resumen.json", resumen, allow_replace=True)

@@ -222,13 +222,17 @@ def test_oclusion_cambia_prediccion_y_anillo_vacio_no():
     m = A.construir_modelo(A.EspecificacionModelo(**CNN), 2, 3)
     base = E.predecir(m, prep, va, precision_mixta=False)
     r50 = np.full(6, 4.0, np.float32)
-    assert not np.allclose(I.predecir_con_modificacion(m, prep, va, canal=0, precision_mixta=False), base)
+    assert not np.allclose(I.predecir_con_modificacion(m, prep, va, banda=0, precision_mixta=False), base)
     assert not np.allclose(I.predecir_con_modificacion(m, prep, va, anillo=(0, 1), radio_mitad_luz_px=r50,
                                                        precision_mixta=False), base)
     np.testing.assert_allclose(I.predecir_con_modificacion(m, prep, va, anillo=(100, 200), radio_mitad_luz_px=r50,
                                                            precision_mixta=False), base, rtol=1e-5, atol=1e-6)
     permutada = I.predecir_con_modificacion(m, prep, va, escalar_permutado=1, semilla=3, precision_mixta=False)
     assert permutada.shape == base.shape
+    # La oclusión se hace en flujo: con la composición de Lupton también funciona, y una banda en 0 sí cambia la entrada
+    lupton = D.PreparadorEntrada(prep.transformacion_grz, "rgb_lupton", lado=32)
+    assert not np.allclose(I.predecir_con_modificacion(m, lupton, va, banda=2, precision_mixta=False),
+                           I.predecir_con_modificacion(m, lupton, va, precision_mixta=False))
 
 
 def _contexto_sintetico(tmp_path, n=24):

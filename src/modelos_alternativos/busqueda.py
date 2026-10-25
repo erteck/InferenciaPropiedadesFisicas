@@ -58,11 +58,27 @@ def ejecutar_busqueda(nombre_estudio: str, ruta_respaldo: Path, proponer: Callab
 
     pendientes = max(0, n_pruebas - hechas)
     registro(f"Estudio {nombre_estudio}: {hechas} pruebas hechas, {pendientes} por hacer")
+    def al_terminar_prueba(estudio_, prueba):
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()           # libera la memoria de la prueba anterior, también si se podó
+        except ImportError:
+            pass
+        if prueba.state == optuna.trial.TrialState.FAIL:
+            registro(f"Prueba {prueba.number} falló: {prueba.system_attrs.get('fail_reason', 'sin detalle')[:300]}")
+        respaldar(ruta_local, ruta_respaldo)
+
     if pendientes:
         estudio.optimize(objetivo, n_trials=pendientes, gc_after_trial=True,
                          catch=(RuntimeError,),   # una prueba que se queda sin memoria no detiene la búsqueda
-                         callbacks=[lambda estudio_, prueba: respaldar(ruta_local, ruta_respaldo)])
+                         callbacks=[al_terminar_prueba])
     respaldar(ruta_local, ruta_respaldo)
+    estados = [t.state for t in estudio.trials]
+    if optuna.trial.TrialState.COMPLETE not in estados:
+        fallidas = [t for t in estudio.trials if t.state == optuna.trial.TrialState.FAIL]
+        detalle = fallidas[-1].system_attrs.get("fail_reason", "") if fallidas else ""
+        raise RuntimeError(f"Ninguna prueba del estudio {nombre_estudio} terminó. Último error: {detalle[:500]}")
     return estudio
 
 
