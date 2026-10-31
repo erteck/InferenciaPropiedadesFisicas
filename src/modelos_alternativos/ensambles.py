@@ -274,19 +274,25 @@ def diferencia_pareada_criterio(y, p_a, p_b, sigma, n_remuestreos: int = 2000, s
 
 
 def regla_un_error_estandar(perdidas: dict, complejidad: dict):
-    """Entre los modelos cuyo criterio está a menos de un error estándar del mejor, elige el más simple.
+    """Entre los modelos que no se distinguen del mejor en más de un error estándar, elige el más simple.
 
-    `perdidas` = {modelo: pérdida por galaxia}; `complejidad` = {modelo: número que crece con el costo (p. ej., redes por galaxia)}.
+    `perdidas` = {modelo: pérdida por galaxia, sobre las mismas galaxias}; `complejidad` = {modelo: número que crece
+    con el costo (p. ej., redes por galaxia)}. Como todos los modelos se evalúan en las mismas galaxias, el error
+    estándar es el de la diferencia pareada con el mejor: descuenta la variación común (galaxias difíciles para
+    todos) y mide solo lo que separa a los dos modelos.
     """
     medias = {k: float(np.mean(v)) for k, v in perdidas.items()}
     mejor = min(medias, key=medias.get)
-    error_estandar = float(np.std(perdidas[mejor], ddof=1) / np.sqrt(len(perdidas[mejor])))
-    umbral = medias[mejor] + error_estandar
-    dentro = [k for k in medias if medias[k] <= umbral]
+    n = len(perdidas[mejor])
+    diferencia = {k: float(np.mean(np.asarray(v) - perdidas[mejor])) for k, v in perdidas.items()}
+    error = {k: float(np.std(np.asarray(v) - perdidas[mejor], ddof=1) / np.sqrt(n)) for k, v in perdidas.items()}
+    dentro = [k for k in medias if k == mejor or diferencia[k] <= error[k]]
     elegido = min(dentro, key=lambda k: (complejidad[k], medias[k]))
-    tabla = pd.DataFrame({"criterio": medias, "complejidad": complejidad}).sort_values("criterio")
+    tabla = pd.DataFrame({"criterio": medias, "diferencia con el mejor": diferencia, "error estándar de la diferencia": error,
+                          "complejidad": complejidad}).sort_values("criterio")
     tabla["dentro de 1 error estándar"] = tabla.index.isin(dentro)
-    return elegido, tabla, {"mejor": mejor, "error_estandar": error_estandar, "umbral": umbral}
+    error_sin_parear = float(np.std(perdidas[mejor], ddof=1) / np.sqrt(n))
+    return elegido, tabla, {"mejor": mejor, "error_estandar_sin_parear": error_sin_parear}
 
 
 def horas_gpu_por_millon(ms_por_galaxia: float) -> float:

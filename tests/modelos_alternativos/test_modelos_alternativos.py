@@ -481,9 +481,17 @@ def test_regla_de_un_error_estandar_y_diferencia_pareada():
     from src.modelos_alternativos import ensambles as EN
     rng = np.random.default_rng(0)
     base = rng.uniform(0.1, 0.3, 400)
-    elegido, tabla, _ = EN.regla_un_error_estandar({"complejo": base, "simple": base + 0.001, "malo": base + 0.5},
+    ruido = rng.normal(0, 0.05, 400); ruido -= ruido.mean()
+    elegido, tabla, _ = EN.regla_un_error_estandar({"complejo": base, "simple": base + ruido + 0.0005, "malo": base + 0.5},
                                                    {"complejo": 9, "simple": 1, "malo": 1})
     assert elegido == "simple" and not tabla.loc["malo", "dentro de 1 error estándar"]
+    # Pareada: una red simple que es peor en casi todas las galaxias queda fuera aunque la diferencia sea menor
+    # que el error estándar sin parear (dominado por las galaxias difíciles para ambos modelos).
+    dificil = rng.exponential(0.12, 1261)
+    peor = dificil + 0.003 + rng.normal(0, 0.02, 1261)
+    elegido, tabla, detalle = EN.regla_un_error_estandar({"ensamble": dificil, "individual": peor}, {"ensamble": 12, "individual": 1})
+    assert tabla.loc["individual", "diferencia con el mejor"] < detalle["error_estandar_sin_parear"]
+    assert elegido == "ensamble" and not tabla.loc["individual", "dentro de 1 error estándar"]
     y = rng.normal(size=(300, 3)); sigma = np.ones(3)
     d, lo, hi = EN.diferencia_pareada_criterio(y, y + rng.normal(0, .2, y.shape), y + rng.normal(0, .5, y.shape), sigma)
     assert d < 0 and hi < 0
