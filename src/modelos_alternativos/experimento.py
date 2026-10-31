@@ -99,6 +99,49 @@ def ejecutar_corrida(contexto: ContextoDatos, carpeta_modelo: Path, prefijo: str
     return ResultadoCorrida(identificador, carpeta, modelo, preparador, resumen, resultado.historial, False, variables_escalares)
 
 
+def corridas_guardadas(carpeta_modelo: Path, registro=print) -> dict:
+    """Corridas terminadas de una carpeta de modelo: {prefijo: {semilla: carpeta}}.
+
+    Si dos corridas comparten prefijo y semilla (configuraciones distintas), se conserva la más reciente.
+    """
+    encontradas: dict = {}
+    for carpeta in sorted((Path(carpeta_modelo) / "corridas").glob("*")):
+        if not corrida_terminada(carpeta):
+            continue
+        resumen = json.loads((carpeta / "resumen.json").read_text())
+        prefijo, semilla = carpeta.name.split("_semilla")[0], int(resumen["configuracion"]["semilla"])
+        previa = encontradas.setdefault(prefijo, {}).get(semilla)
+        if previa is not None:
+            fecha_previa = json.loads((previa / "resumen.json").read_text()).get("fecha_utc", "")
+            registro(f"Aviso: {prefijo} semilla {semilla} tiene dos corridas; se conserva la más reciente")
+            if resumen.get("fecha_utc", "") < fecha_previa:
+                continue
+        encontradas[prefijo][semilla] = carpeta
+    return encontradas
+
+
+def recuperar_corrida(contexto: ContextoDatos, carpeta_corrida: Path, dispositivo) -> ResultadoCorrida:
+    """Recupera una corrida terminada sin conocer su configuración: sale del resumen guardado.
+
+    No descarga pesos preentrenados (se cargan los de la corrida), así que sirve para predecir con
+    modelos entrenados en otra sesión.
+    """
+    carpeta = Path(carpeta_corrida)
+    if not corrida_terminada(carpeta):
+        raise FileNotFoundError(f"La corrida {carpeta.name} no está terminada")
+    resumen = json.loads((carpeta / "resumen.json").read_text())
+    especificacion = {**resumen["especificacion"], "capas_lora": tuple(resumen["especificacion"].get("capas_lora", ("qkv", "proj"))),
+                      "preentrenado": False}
+    espec = EspecificacionModelo(**especificacion)
+    variables = tuple(resumen.get("variables_escalares", ()))
+    entrada = resumen["entrada"]
+    modelo, resumen, historial = cargar_corrida(carpeta, construir_modelo(espec, len(variables), len(contexto.objetivos)))
+    media, desviacion = (normalizacion_rgb_del_extractor(espec.nombre_extractor)
+                         if entrada.get("representacion") == "rgb_lupton" else (None, None))
+    return ResultadoCorrida(resumen.get("identificador", carpeta.name), carpeta, modelo.to(dispositivo).eval(),
+                            crear_preparador(contexto, entrada, media, desviacion), resumen, historial, True, variables)
+
+
 def predicciones_originales(contexto: ContextoDatos, corrida: ResultadoCorrida, particion: str, dispositivo,
                             tta: bool = False) -> np.ndarray:
     """Predicciones de una partición en la escala original de cada propiedad."""

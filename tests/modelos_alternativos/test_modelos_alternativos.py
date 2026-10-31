@@ -371,3 +371,152 @@ def test_metricas_redshift():
     z = np.array([0.02, 0.03, 0.05, 0.1])
     m = metricas_redshift(z, z * 1.1)
     assert m["error_relativo_mediano"] == pytest.approx(0.1) and m["sesgo_dz"] > 0 and m["atipicos_dz_mayor_0.05"] == 0
+
+
+# ------------------------------------------------------------------ Avance 5: predicciones y ensambles
+def _tablas_sinteticas(n=30, semillas=(42, 7), familias=("a", "b"), sesgo=None):
+    from src.modelos_alternativos import predicciones as PR
+    rng = np.random.default_rng(1)
+    muestra = pd.DataFrame({"mangaid": [f"g{i}" for i in range(n)], "particion": ["Validation"] * n,
+                            "log_mstar": rng.normal(10, .5, n), "log_sfr": rng.normal(0, 1, n), "d4000": rng.normal(1.5, .2, n),
+                            "redshift": rng.uniform(.01, .1, n)})
+    indices = {"Validation": np.arange(n)}
+    y = muestra[list(PR.OBJETIVOS)].to_numpy()
+    tablas = []
+    for f in familias:
+        for s in semillas:
+            p = y + rng.normal(0, [.2, .5, .1], (n, 3)) + (sesgo or {}).get(f, 0)
+            tablas.append(PR.tabla_predicciones(muestra, indices, f, s, {"Validation": p}, tta=True))
+    return muestra, y, pd.concat(tablas, ignore_index=True)
+
+
+def test_conjunto_de_predicciones_se_alinea_por_mangaid_y_detecta_etiquetas_distintas():
+    from src.modelos_alternativos import predicciones as PR
+    _, y, tabla = _tablas_sinteticas()
+    desordenada = pd.concat([tabla[tabla.familia == "a"].sample(frac=1, random_state=0), tabla[tabla.familia == "b"]])
+    conjunto = PR.construir_conjunto(desordenada, "Validation", registro=lambda *_: None)
+    assert conjunto.pred["a"].shape == (2, 30, 3) and list(conjunto.ids) == sorted(conjunto.ids)
+    np.testing.assert_allclose(conjunto.y, y[np.argsort([int(i[1:]) for i in sorted(conjunto.ids)]) * 0 + [int(i[1:]) for i in conjunto.ids]])
+    incompleta = tabla.drop(tabla[(tabla.familia == "b") & (tabla.mangaid == "g3")].index)
+    assert len(PR.construir_conjunto(incompleta, "Validation", registro=lambda *_: None).ids) == 29
+    rota = tabla.copy(); rota.loc[(rota.familia == "b") & (rota.semilla == 7), "y_d4000"] += 1.0
+    with pytest.raises(ValueError):
+        PR.construir_conjunto(rota, "Validation", registro=lambda *_: None)
+
+
+def test_mezcla_convexa_pesos_validos_y_regularizacion_hacia_el_promedio():
+    from src.modelos_alternativos import ensambles as EN
+    rng = np.random.default_rng(0)
+    y = rng.normal(size=(200, 3)); sigma = np.ones(3)
+    P = np.stack([y + rng.normal(0, s, y.shape) for s in (0.1, 0.5, 1.0)])
+    W = EN.pesos_mezcla_convexa(P, y, sigma, 0.0, "por_objetivo")
+    assert (W >= -1e-9).all() and np.allclose(W.sum(0), 1) and (W[0] > W[2]).all()
+    assert EN.criterio(y, EN.aplicar_pesos(P, W), sigma) <= EN.criterio(y, P.mean(0), sigma) + 1e-9
+    np.testing.assert_allclose(EN.pesos_mezcla_convexa(P, y, sigma, 1e6), 1 / 3, atol=1e-3)
+    Wg = EN.pesos_mezcla_convexa(P, y, sigma, 0.0, "global")
+    assert np.allclose(Wg[:, 0], Wg[:, 1]) and np.allclose(Wg[:, 1], Wg[:, 2])
+
+
+def test_ambiguedad_es_exacta_con_pesos_convexos():
+    from src.modelos_alternativos import ensambles as EN
+    rng = np.random.default_rng(0)
+    y = rng.normal(size=(100, 3)); sigma = np.array([1., 2., .5])
+    P = np.stack([y + rng.normal(0, s, y.shape) for s in (0.2, 0.4, 0.6)])
+    W = EN.pesos_mezcla_convexa(P, y, sigma, 0.1)
+    for pesos in (None, W):
+        d = EN.descomposicion_ambiguedad(P, y, sigma, pesos)
+        np.testing.assert_allclose(d["error del ensamble"], d["error medio de los miembros"] - d["ambigüedad"], atol=1e-9)
+    assert EN.desacuerdo_ponderado(P).shape == (100, 3)
+
+
+@pytest.mark.parametrize("config", [{"tipo": "promedio"}, {"tipo": "mezcla_convexa", "lambda": 0.1, "alcance": "global"},
+                                    {"tipo": "lineal_positivo"}, {"tipo": "elastica_positiva", "alpha": 0.01, "l1_ratio": 0.5},
+                                    {"tipo": "ridge_correccion", "alpha": 10.0, "entradas": "todas", "usar_z": True, "usar_desacuerdo": True},
+                                    {"tipo": "ridge_correccion", "alpha": 10.0, "entradas": "misma_propiedad"},
+                                    {"tipo": "bosque_residual", "profundidad": 2, "tasa": 0.05, "iteraciones": 30, "usar_z": True}])
+def test_toda_configuracion_de_ensamble_ajusta_y_predice(config):
+    from src.modelos_alternativos import ensambles as EN
+    rng = np.random.default_rng(0)
+    y = rng.normal(size=(120, 3)); z = rng.uniform(.02, .1, 120); sigma = np.ones(3)
+    P = np.stack([y + rng.normal(0, s, y.shape) for s in (0.2, 0.4, 0.6)])
+    pred = EN.ajustar_predecir(config, P[:, :90], y[:90], z[:90], P[:, 90:], z[90:], sigma)
+    assert pred.shape == (30, 3) and np.isfinite(pred).all()
+    assert EN.criterio(y[90:], pred, sigma) < EN.criterio(y[90:], P[2, 90:], sigma)       # mejor que el peor miembro
+
+
+def test_ridge_con_regularizacion_enorme_equivale_al_promedio_mas_la_correccion_del_sesgo():
+    from src.modelos_alternativos import ensambles as EN
+    rng = np.random.default_rng(0)
+    y = rng.normal(size=(80, 3)); P = np.stack([y + rng.normal(0, s, y.shape) for s in (0.2, 0.5)]); sigma = np.ones(3)
+    pred = EN.ajustar_predecir({"tipo": "ridge_correccion", "alpha": 1e9, "entradas": "todas"}, P[:, :60], y[:60], None, P[:, 60:], None, sigma)
+    sesgo_de_ajuste = (y[:60] - P[:, :60].mean(0)).mean(0)         # el intercepto no se penaliza
+    np.testing.assert_allclose(pred, P[:, 60:].mean(0) + sesgo_de_ajuste, atol=1e-4)
+
+
+def test_validacion_anidada_no_ve_las_etiquetas_del_pliegue_externo():
+    from src.modelos_alternativos import ensambles as EN
+    rng = np.random.default_rng(0)
+    y = rng.normal(size=(100, 3)); sigma = np.ones(3)
+    P = np.stack([y + rng.normal(0, s, y.shape) for s in (0.2, 0.5, 0.9)])
+    candidatos = [{"tipo": "mezcla_convexa", "lambda": l, "alcance": "por_objetivo"} for l in (0.0, 0.1)] + [{"tipo": "promedio"}]
+    a = EN.validacion_anidada(P, y, None, sigma, candidatos=candidatos, pliegues_externos=4, repeticiones=1, semilla=3)
+    externo = EN.pliegues(len(y), 4, 3, 0)[1]
+    y2 = y.copy(); y2[externo] += 5.0                          # cambian solo las etiquetas de un pliegue externo
+    b = EN.validacion_anidada(P, y2, None, sigma, candidatos=candidatos, pliegues_externos=4, repeticiones=1, semilla=3)
+    np.testing.assert_allclose(a["oof"][externo], b["oof"][externo])
+    assert a["oof"].shape == y.shape and len(a["configuraciones"]) == 4
+
+
+def test_busqueda_con_optuna_devuelve_una_configuracion_valida():
+    from src.modelos_alternativos import ensambles as EN
+    rng = np.random.default_rng(0)
+    y = rng.normal(size=(100, 3)); sigma = np.ones(3)
+    P = np.stack([y + rng.normal(0, s, y.shape) for s in (0.2, 0.5)])
+    proponer = lambda t: {"tipo": "ridge_correccion", "alpha": t.suggest_float("alpha", 1e-2, 1e3, log=True), "entradas": "todas"}
+    config, tabla = EN.buscar_configuracion(P, y, None, sigma, proponer=proponer, n_pruebas=6, semilla=0)
+    assert config["tipo"] == "ridge_correccion" and len(tabla) == 6 and tabla.criterio.is_monotonic_increasing
+
+
+def test_regla_de_un_error_estandar_y_diferencia_pareada():
+    from src.modelos_alternativos import ensambles as EN
+    rng = np.random.default_rng(0)
+    base = rng.uniform(0.1, 0.3, 400)
+    elegido, tabla, _ = EN.regla_un_error_estandar({"complejo": base, "simple": base + 0.001, "malo": base + 0.5},
+                                                   {"complejo": 9, "simple": 1, "malo": 1})
+    assert elegido == "simple" and not tabla.loc["malo", "dentro de 1 error estándar"]
+    y = rng.normal(size=(300, 3)); sigma = np.ones(3)
+    d, lo, hi = EN.diferencia_pareada_criterio(y, y + rng.normal(0, .2, y.shape), y + rng.normal(0, .5, y.shape), sigma)
+    assert d < 0 and hi < 0
+    assert abs(EN.horas_gpu_por_millon(2.7) - 0.75) < 1e-9
+    assert EN.pendiente_de_calibracion(y[:, 0], 0.5 * y[:, 0]) == pytest.approx(0.5)
+
+
+def test_corridas_guardadas_se_encuentran_y_se_recuperan_sin_configuracion(tmp_path):
+    from src.modelos_alternativos import experimento as X
+    ctx = _contexto_sintetico(tmp_path)
+    espec = A.EspecificacionModelo(**CNN)
+    entrada = {"representacion": "grz_estandarizado", "lado": 32}
+    for semilla in (42, 7):
+        X.ejecutar_corrida(ctx, tmp_path / "modelo", "final", espec,
+                           E.ConfiguracionEntrenamiento(epocas=2, tamano_lote=8, precision_mixta=False, canales_ultimos=False, semilla=semilla),
+                           entrada, CPU, ("redshift",), registro=lambda *_: None)
+    encontradas = X.corridas_guardadas(tmp_path / "modelo", registro=lambda *_: None)
+    assert set(encontradas) == {"final"} and set(encontradas["final"]) == {42, 7}
+    corrida = X.recuperar_corrida(ctx, encontradas["final"][42], CPU)
+    assert corrida.variables_escalares == ("redshift",) and corrida.reutilizada
+    original = X.ejecutar_corrida(ctx, tmp_path / "modelo", "final", espec,
+                                  E.ConfiguracionEntrenamiento(epocas=2, tamano_lote=8, precision_mixta=False, canales_ultimos=False, semilla=42),
+                                  entrada, CPU, ("redshift",), registro=lambda *_: None)
+    np.testing.assert_allclose(X.predicciones_originales(ctx, corrida, "Validation", CPU),
+                               X.predicciones_originales(ctx, original, "Validation", CPU), rtol=1e-5, atol=1e-6)
+
+
+def test_registro_de_eleccion_conserva_la_primera_y_avisa_si_cambia(tmp_path):
+    from src.modelos_alternativos import ensambles as EN
+    mensajes = []
+    pred = np.random.default_rng(0).normal(size=(10, 3))
+    primero = EN.registrar_eleccion(tmp_path / "r.json", {"modelo": "a"}, pred, registro=mensajes.append)
+    igual = EN.registrar_eleccion(tmp_path / "r.json", {"modelo": "a"}, pred, registro=mensajes.append)
+    assert igual["fecha_utc"] == primero["fecha_utc"] and not any("AVISO" in m for m in mensajes)
+    EN.registrar_eleccion(tmp_path / "r.json", {"modelo": "b"}, pred + 1, registro=mensajes.append)
+    assert any("AVISO" in m for m in mensajes)
