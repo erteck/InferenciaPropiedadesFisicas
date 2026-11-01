@@ -1,7 +1,7 @@
 {
-  "pista": "con_redshift",
-  "commit": "6567def00d82b2ab039fd63e1d6740380c93e298",
-  "fecha_utc": "2026-11-01T00:40:09.033036+00:00",
+  "entradas": "con_redshift",
+  "commit": "6a22755fcbd99f38a89be6564d61e7620c3599de",
+  "fecha_utc": "2026-11-01T06:39:19.920444+00:00",
   "familias": [
     "dinov3_z",
     "convnext_z",
@@ -174,8 +174,8 @@
         "alcance": "por_objetivo"
       }
     ],
-    "segundos_validacion_anidada": 8.061593055725098,
-    "segundos_ajuste_final": 0.7554950714111328
+    "segundos_validacion_anidada": 6.984912872314453,
+    "segundos_ajuste_final": 0.6564149856567383
   },
   "h2_meta_aprendiz": {
     "nombre": "Heterogéneo 2: meta-aprendiz",
@@ -391,7 +391,7 @@
         "iteraciones": NaN
       }
     ],
-    "segundos_validacion_anidada": 8.419541835784912,
-    "segundos_ajuste_final": 28.866053819656372
+    "segundos_validacion_anidada": 12.98461389541626,
+    "segundos_ajuste_final": 43.60011410713196
   }
 }
