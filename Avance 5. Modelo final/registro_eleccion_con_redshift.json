@@ -1,0 +1,8 @@
+{
+  "pista": "con_redshift",
+  "modelo": "Heterogéneo 1: mezcla convexa",
+  "commit": "42078497a86367e00d46bd11a682e99ccabc3cab",
+  "criterio_validacion": 0.1036645532189325,
+  "huella_predicciones_validacion": "3d4a5ad530e1a2e4ab276a1fb2b94119eaa669783c5e6d99422d1519e52757bb",
+  "fecha_utc": "2026-11-01T00:47:19.384757+00:00"
+}
