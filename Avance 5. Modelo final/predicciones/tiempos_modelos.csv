@@ -1,0 +1,20 @@
+familia,semilla,origen,hardware,entradas,minutos_entrenamiento,parametros_totales_M,parametros_entrenables_M,ms_por_galaxia
+convnext_imagen,42.0,Avance 4,NVIDIA A100 (Colab),imagen,5.988030238946279,28.411491,28.411491,0.4526125267148018
+convnext_imagen,7.0,Avance 4,NVIDIA A100 (Colab),imagen,5.9891130765279135,28.411491,28.411491,
+convnext_imagen,2026.0,Avance 4,NVIDIA A100 (Colab),imagen,5.993327903747558,28.411491,28.411491,
+dinov3_imagen,42.0,Avance 4,NVIDIA A100 (Colab),imagen,24.081615670522055,308.192003,5.112579,2.6914793998003006
+dinov3_imagen,7.0,Avance 4,NVIDIA A100 (Colab),imagen,24.093689095973968,308.192003,5.112579,
+dinov3_imagen,2026.0,Avance 4,NVIDIA A100 (Colab),imagen,24.08975484371185,308.192003,5.112579,
+dinov3_z,42.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,24.057766966025035,308.192387,5.112963,2.692384645342827
+dinov3_z,7.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,24.045442008972167,308.192387,5.112963,
+dinov3_z,2026.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,24.017822408676146,308.192387,5.112963,
+convnext_z,42.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,6.312530235449473,28.412259,28.412259,0.4512546584010124
+convnext_z,7.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,6.011304974555969,28.412259,28.412259,
+convnext_z,2026.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,6.012179267406464,28.412259,28.412259,
+efficientnet_z,42.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,6.383633275826772,11.878187,11.878187,0.3960011526942253
+efficientnet_z,7.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,6.40596372683843,11.878187,11.878187,
+efficientnet_z,2026.0,este cuaderno,NVIDIA A100-SXM4-40GB,imagen + redshift medido,6.386512990792593,11.878187,11.878187,
+resnet50_e,,medición de inferencia (pesos aleatorios),NVIDIA A100-SXM4-40GB,imagen + redshift medido,,,,0.4443833604454994
+resnet50_d,,medición de inferencia (pesos aleatorios),NVIDIA A100-SXM4-40GB,imagen + redshift medido,,,,0.4443833604454994
+resnet50_g,,medición de inferencia (pesos aleatorios),NVIDIA A100-SXM4-40GB,imagen,,,,0.4430823028087616
+resnet50_f,,medición de inferencia (pesos aleatorios),NVIDIA A100-SXM4-40GB,imagen,,,,0.4430823028087616

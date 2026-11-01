@@ -138,3 +138,55 @@ def construir_conjunto(tabla: pd.DataFrame, particion: str, familias=None, objet
             matrices.append(g[[f"pred_{o}" for o in objetivos]].to_numpy(float))
         pred[f], semillas[f] = np.stack(matrices), semillas_f
     return ConjuntoPredicciones(particion, ids, y, redshift, pred, semillas, tuple(objetivos))
+
+
+# ---------------------------------------------------------------------------
+# Predicciones de los ensambles heterogéneos (cuaderno de ensambles → cuaderno de comparación final)
+# ---------------------------------------------------------------------------
+def huella_miembros(conjunto: ConjuntoPredicciones, familias) -> str:
+    """Huella de las galaxias y de las predicciones de los miembros: detecta si cambiaron entre cuadernos."""
+    import hashlib
+    h = hashlib.sha256("|".join(map(str, conjunto.ids)).encode())
+    for f in familias:
+        h.update(f.encode())
+        h.update(np.round(conjunto.media(f), 6).tobytes())
+    return h.hexdigest()
+
+
+def nombre_archivo_ensamble(pista: str, nombre: str) -> str:
+    return f"ens_{pista}_{nombre}.csv"
+
+
+def guardar_ensamble(carpeta: Path, pista: str, nombre: str, ids_validacion, oof_por_repeticion, ids_prueba, prediccion_prueba,
+                     objetivos=OBJETIVOS) -> Path:
+    """Guarda las predicciones fuera de pliegue de validación (una por repetición) y las de prueba de un ensamble.
+
+    En prueba solo se guarda la predicción: ningún cuaderno de ensambles calcula métricas con esas galaxias.
+    """
+    partes = []
+    for r, oof in enumerate(oof_por_repeticion):
+        partes.append(pd.DataFrame({"mangaid": np.asarray(ids_validacion, str), "particion": "Validation", "repeticion": r,
+                                    **{f"pred_{t}": np.asarray(oof, float)[:, k] for k, t in enumerate(objetivos)}}))
+    partes.append(pd.DataFrame({"mangaid": np.asarray(ids_prueba, str), "particion": "Test", "repeticion": -1,
+                                **{f"pred_{t}": np.asarray(prediccion_prueba, float)[:, k] for k, t in enumerate(objetivos)}}))
+    ruta = Path(carpeta) / nombre_archivo_ensamble(pista, nombre)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    pd.concat(partes, ignore_index=True).to_csv(ruta, index=False)
+    return ruta
+
+
+def leer_ensamble(carpeta: Path, pista: str, nombre: str, ids_validacion, ids_prueba, objetivos=OBJETIVOS):
+    """Lee un ensamble guardado y lo alinea por `mangaid`: (lista de (n_val, 3) por repetición, (n_prueba, 3))."""
+    t = pd.read_csv(Path(carpeta) / nombre_archivo_ensamble(pista, nombre), dtype={"mangaid": str})
+    columnas = [f"pred_{o}" for o in objetivos]
+
+    def alinear(g, ids, etiqueta):
+        g = g.set_index("mangaid")
+        faltan = set(map(str, ids)) - set(g.index)
+        if faltan:
+            raise ValueError(f"{nombre}: faltan {len(faltan)} galaxias de {etiqueta}; vuelve a ejecutar el cuaderno de ensambles heterogéneos")
+        return g.loc[list(map(str, ids)), columnas].to_numpy(float)
+
+    val = t[t.particion == "Validation"]
+    oof = [alinear(g, ids_validacion, "validación") for _, g in val.groupby("repeticion")]
+    return oof, alinear(t[t.particion == "Test"], ids_prueba, "prueba")

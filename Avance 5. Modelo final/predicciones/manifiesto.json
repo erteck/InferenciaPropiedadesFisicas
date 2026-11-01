@@ -1,0 +1,24 @@
+{
+  "pista": "con_redshift",
+  "familias": [
+    "convnext_imagen",
+    "convnext_z",
+    "dinov3_imagen",
+    "dinov3_z",
+    "efficientnet_z"
+  ],
+  "semillas": [
+    42,
+    7,
+    2026
+  ],
+  "tta": true,
+  "galaxias": {
+    "Train": 7121,
+    "Validation": 1261,
+    "Test": 917
+  },
+  "commit": "33b868a7da2ad6d910b41924fccc913116eaea56",
+  "gpu": "NVIDIA A100-SXM4-40GB",
+  "fecha_utc": "2026-11-01T00:20:56.115204+00:00"
+}

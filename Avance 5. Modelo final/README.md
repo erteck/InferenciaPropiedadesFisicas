@@ -14,5 +14,7 @@ En esta carpeta se documentan los experimentos, las configuraciones y los result
 |---|---|---|
 | `Ensambles_Homogeneos_ResNet50_D_E_vf.ipynb` | Ensambles homogéneos de ResNet50 (variantes D y E, tres semillas cada una) | Servidor con GPU |
 | `Modelos_Base_DINOv3_ConvNeXt_EfficientNet.ipynb` | Entrenamiento de los miembros nuevos (DINOv3 y ConvNeXt con redshift, EfficientNet-B3) y exportación de las predicciones de todas las redes | Colab con GPU A100 |
-| `Avance5.24.ipynb` | Entregable: ensambles heterogéneos, comparación, selección del modelo final y evaluación en prueba | Sin GPU |
-| `predicciones/` | Predicciones de validación y de prueba de cada red, un archivo `pred_<familia>_s<semilla>.csv` por red | Datos de entrada de `Avance5.24.ipynb` |
+| `Ensambles_Heterogeneos_Mezcla_MetaAprendiz.ipynb` | Ensambles heterogéneos: mezcla convexa y meta-aprendiz, con su optimización y su validación anidada; guarda sus predicciones en `ensambles_heterogeneos/` | Sin GPU |
+| `Avance5.24.ipynb` | Entregable: comparación final de los modelos individuales, los homogéneos y los heterogéneos, selección del modelo final y evaluación en prueba | Sin GPU |
+| `predicciones/` | Predicciones de validación y de prueba de cada red, un archivo `pred_<familia>_s<semilla>.csv` por red | Datos de entrada de los dos cuadernos sin GPU |
+| `ensambles_heterogeneos/` | Predicciones, configuración y aporte por familia de los dos ensambles heterogéneos de cada pista | Datos de entrada de `Avance5.24.ipynb` |

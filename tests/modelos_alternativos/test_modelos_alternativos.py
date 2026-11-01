@@ -528,3 +528,23 @@ def test_registro_de_eleccion_conserva_la_primera_y_avisa_si_cambia(tmp_path):
     assert igual["fecha_utc"] == primero["fecha_utc"] and not any("AVISO" in m for m in mensajes)
     EN.registrar_eleccion(tmp_path / "r.json", {"modelo": "b"}, pred + 1, registro=mensajes.append)
     assert any("AVISO" in m for m in mensajes)
+
+
+def test_ensamble_guardado_se_lee_alineado_por_mangaid_y_la_huella_detecta_cambios(tmp_path):
+    from src.modelos_alternativos import predicciones as PR
+    _, _, tabla = _tablas_sinteticas(n=20)
+    val = PR.construir_conjunto(tabla, "Validation", ["a", "b"])
+    rng = np.random.default_rng(3)
+    oof = [rng.normal(size=(20, 3)) for _ in range(2)]
+    ids_prueba = np.array([f"t{i}" for i in range(7)])
+    prueba = rng.normal(size=(7, 3))
+    PR.guardar_ensamble(tmp_path, "pista", "h1", val.ids, oof, ids_prueba, prueba)
+    orden = val.ids[::-1]                                   # otro orden de galaxias: se debe realinear
+    oof_leido, prueba_leida = PR.leer_ensamble(tmp_path, "pista", "h1", orden, ids_prueba[::-1])
+    assert len(oof_leido) == 2
+    np.testing.assert_allclose(oof_leido[1], oof[1][::-1])
+    np.testing.assert_allclose(prueba_leida, prueba[::-1])
+    with pytest.raises(ValueError):
+        PR.leer_ensamble(tmp_path, "pista", "h1", np.r_[val.ids, ["otra"]], ids_prueba)
+    huella = PR.huella_miembros(val, ["a", "b"])
+    assert huella == PR.huella_miembros(val, ["a", "b"]) and huella != PR.huella_miembros(val, ["a"])
