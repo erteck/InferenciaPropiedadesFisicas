@@ -46,15 +46,24 @@ class EspecificacionModelo:
     unidades_ocultas: int = 256                    # cabeza (protocolo común)
     dropout_cabeza: float = 0.1
     lado_entrada: int | None = None                # tamaño de imagen con que se crea el extractor (ViT)
+    encadenar_salidas: bool = False                # cabezas en cadena, como Katachi (ver CabezaEncadenada)
+    cadena_con_gradiente: bool = False             # en la cadena, si el error de una salida corrige a las anteriores
 
     def __post_init__(self):
         if self.estrategia_ajuste not in ESTRATEGIAS_AJUSTE:
             raise ValueError(f"estrategia_ajuste debe ser una de {ESTRATEGIAS_AJUSTE}")
         if self.agregacion_tokens not in AGREGACIONES_TOKENS:
             raise ValueError(f"agregacion_tokens debe ser una de {AGREGACIONES_TOKENS}")
+        if self.cadena_con_gradiente and not self.encadenar_salidas:
+            raise ValueError("cadena_con_gradiente solo aplica con encadenar_salidas=True")
 
     def a_dict(self) -> dict:
         d = asdict(self); d["capas_lora"] = list(self.capas_lora)
+        # Las opciones de la cadena solo aparecen cuando están activas: así la huella (y la carpeta) de las
+        # corridas con cabezas independientes no cambia respecto a las guardadas antes de existir la opción.
+        for clave in ("encadenar_salidas", "cadena_con_gradiente"):
+            if not d[clave]:
+                d.pop(clave)
         return d
 
 
@@ -121,14 +130,43 @@ class CabezaMultisalida(nn.Module):
         return torch.cat([c(vector) for c in self.cabezas], 1)
 
 
+class CabezaEncadenada(nn.Module):
+    """Cabezas en cadena: la salida k recibe el vector y las salidas 0, …, k − 1 ya predichas.
+
+    Reproduce la idea de Katachi (Alfonzo et al. 2024), que encadena una red para la masa, otra para la
+    SFR que recibe la masa estimada y otra para D4000 que recibe ambas, pero sobre un extractor
+    compartido. Cada cabeza recibe la *predicción* de las anteriores, nunca la etiqueta, como ocurrirá con
+    galaxias nuevas (en entrenamiento esa predicción es algo más precisa que fuera de él). Sin gradiente en la
+    cadena (por defecto), el error de una salida no modifica las cabezas anteriores: cada una aprende
+    solo su propiedad, como en las redes separadas de Katachi.
+    """
+
+    def __init__(self, dimension_entrada: int, n_salidas: int, unidades_ocultas: int = 256, dropout: float = 0.1,
+                 con_gradiente: bool = False):
+        super().__init__()
+        self.con_gradiente = con_gradiente
+        self.cabezas = nn.ModuleList([nn.Sequential(nn.Linear(dimension_entrada + k, unidades_ocultas), nn.ReLU(),
+                                                    nn.Dropout(dropout), nn.Linear(unidades_ocultas, 1))
+                                      for k in range(n_salidas)])
+
+    def forward(self, vector: torch.Tensor) -> torch.Tensor:
+        salidas = []
+        for cabeza in self.cabezas:
+            previas = [s if self.con_gradiente else s.detach() for s in salidas]
+            salidas.append(cabeza(torch.cat([vector, *[p.to(vector.dtype) for p in previas]], 1)))
+        return torch.cat(salidas, 1)
+
+
 class ModeloRegresionImagen(nn.Module):
-    """Extractor de imagen + variables escalares opcionales + cabeza multisalida."""
+    """Extractor de imagen + variables escalares opcionales + cabeza multisalida (independiente o en cadena)."""
 
     def __init__(self, extractor: Extractor, n_escalares: int, n_salidas: int, unidades_ocultas: int = 256,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1, encadenar_salidas: bool = False, cadena_con_gradiente: bool = False):
         super().__init__()
         self.extractor, self.n_escalares = extractor, n_escalares
-        self.cabeza = CabezaMultisalida(extractor.dimension + n_escalares, n_salidas, unidades_ocultas, dropout)
+        dimension = extractor.dimension + n_escalares
+        self.cabeza = (CabezaEncadenada(dimension, n_salidas, unidades_ocultas, dropout, cadena_con_gradiente)
+                       if encadenar_salidas else CabezaMultisalida(dimension, n_salidas, unidades_ocultas, dropout))
 
     def forward(self, imagen: torch.Tensor, escalares: torch.Tensor | None = None) -> torch.Tensor:
         vector = self.extractor(imagen)
@@ -201,7 +239,8 @@ def aplicar_estrategia_ajuste(extractor: Extractor, espec: EspecificacionModelo)
 def construir_modelo(espec: EspecificacionModelo, n_escalares: int, n_salidas: int) -> ModeloRegresionImagen:
     extractor = crear_extractor(espec)
     aplicar_estrategia_ajuste(extractor, espec)
-    return ModeloRegresionImagen(extractor, n_escalares, n_salidas, espec.unidades_ocultas, espec.dropout_cabeza)
+    return ModeloRegresionImagen(extractor, n_escalares, n_salidas, espec.unidades_ocultas, espec.dropout_cabeza,
+                                 espec.encadenar_salidas, espec.cadena_con_gradiente)
 
 
 # ---------------------------------------------------------------------------

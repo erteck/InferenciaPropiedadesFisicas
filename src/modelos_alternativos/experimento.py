@@ -279,6 +279,8 @@ def ejecutar_cabeza_congelada(contexto: ContextoDatos, carpeta_modelo: Path, pre
     from .representaciones import cargar_cabeza, entrenar_cabeza, guardar_cabeza, plegar_estandarizacion
 
     variables_escalares = tuple(variables_escalares)
+    if espec.encadenar_salidas:
+        raise NotImplementedError("Las cabezas sobre representaciones congeladas no admiten la cadena; usa ejecutar_corrida")
     espec = EspecificacionModelo(**{**espec.a_dict(), "capas_lora": tuple(espec.capas_lora), "estrategia_ajuste": "congelado"})
     contenido = json.dumps({"espec": espec.a_dict(), "cabeza": config_cabeza.a_dict(), "entrada": entrada,
                             "variables_escalares": list(variables_escalares)}, sort_keys=True)

@@ -96,6 +96,67 @@ def test_agregacion_de_tokens_vit(agregacion, factor):
     assert ext.es_de_tokens and ext(torch.randn(2, 3, 32, 32)).shape == (2, ext.red.num_features * factor)
 
 
+# ------------------------------------------------------------------ cabezas en cadena
+def test_interruptor_apagado_no_cambia_modelo_ni_huella():
+    from src.modelos_alternativos import experimento as X
+    apagado = A.EspecificacionModelo(**CNN)
+    assert "encadenar_salidas" not in apagado.a_dict() and "cadena_con_gradiente" not in apagado.a_dict()
+    entrada, cfg = {"representacion": "grz_estandarizado", "lado": 32}, E.ConfiguracionEntrenamiento()
+    # Una corrida guardada antes de existir la opción tiene un resumen sin esos campos: debe conservar su identificador
+    antiguo = {k: v for k, v in apagado.a_dict().items()}
+    reconstruido = A.EspecificacionModelo(**{**antiguo, "capas_lora": tuple(antiguo["capas_lora"])})
+    assert X.identificador_corrida("f", reconstruido, cfg, entrada) == X.identificador_corrida("f", apagado, cfg, entrada)
+    encendido = A.EspecificacionModelo(**CNN, encadenar_salidas=True)
+    assert encendido.a_dict()["encadenar_salidas"] is True
+    assert X.identificador_corrida("f", encendido, cfg, entrada) != X.identificador_corrida("f", apagado, cfg, entrada)
+    assert isinstance(A.construir_modelo(apagado, 1, 3).cabeza, A.CabezaMultisalida)
+    with pytest.raises(ValueError):
+        A.EspecificacionModelo(**CNN, cadena_con_gradiente=True)
+
+
+def test_cabeza_encadenada_recibe_las_salidas_anteriores():
+    modelo = A.construir_modelo(A.EspecificacionModelo(**CNN, encadenar_salidas=True), n_escalares=1, n_salidas=3)
+    cabeza = modelo.cabeza
+    assert isinstance(cabeza, A.CabezaEncadenada)
+    d = modelo.extractor.dimension + 1
+    assert [c[0].in_features for c in cabeza.cabezas] == [d, d + 1, d + 2]
+    assert modelo(torch.randn(2, 3, 32, 32), torch.randn(2, 1)).shape == (2, 3)
+    # La salida k depende de las anteriores: cambiar la primera cabeza cambia la segunda y la tercera
+    vector = torch.randn(4, d)
+    antes = cabeza.eval()(vector)
+    with torch.no_grad():
+        cabeza.cabezas[0][-1].bias += 5.0
+    despues = cabeza(vector)
+    assert torch.allclose(antes[:, 0] + 5.0, despues[:, 0], atol=1e-5)
+    assert not torch.allclose(antes[:, 1:], despues[:, 1:])
+
+
+@pytest.mark.parametrize("con_gradiente", [False, True])
+def test_sin_gradiente_la_perdida_de_sfr_no_mueve_la_cabeza_de_masa(con_gradiente):
+    cabeza = A.CabezaEncadenada(8, 3, unidades_ocultas=4, dropout=0.0, con_gradiente=con_gradiente)
+    salida = cabeza(torch.randn(5, 8))
+    salida[:, 1].pow(2).mean().backward()             # solo la pérdida de la segunda salida (SFR)
+    gradiente_masa = sum(float(p.grad.abs().sum()) for p in cabeza.cabezas[0].parameters() if p.grad is not None)
+    assert (gradiente_masa > 0) == con_gradiente
+    assert all(p.grad is None or float(p.grad.abs().sum()) == 0 for p in cabeza.cabezas[2].parameters())
+
+
+def test_corrida_encadenada_entrena_se_guarda_y_se_recupera(tmp_path):
+    from src.modelos_alternativos import experimento as X
+    ctx = _contexto_sintetico(tmp_path)
+    with pytest.raises(NotImplementedError):
+        X.ejecutar_cabeza_congelada(ctx, tmp_path / "m", "c", A.EspecificacionModelo(**CNN, encadenar_salidas=True),
+                                    R.ConfiguracionCabeza(epocas=1), {}, {}, CPU, guardar=False)
+    espec = A.EspecificacionModelo(**CNN, encadenar_salidas=True)
+    cfg = E.ConfiguracionEntrenamiento(epocas=2, tamano_lote=8, precision_mixta=False, canales_ultimos=False)
+    entrada = {"representacion": "grz_estandarizado", "lado": 32}
+    r = X.ejecutar_corrida(ctx, tmp_path / "modelo", "f_cadena", espec, cfg, entrada, CPU, ("redshift",), registro=lambda *_: None)
+    recuperada = X.recuperar_corrida(ctx, r.carpeta, CPU)
+    assert isinstance(recuperada.modelo.cabeza, A.CabezaEncadenada)
+    np.testing.assert_allclose(X.predicciones_originales(ctx, r, "Validation", CPU, tta=True),
+                               X.predicciones_originales(ctx, recuperada, "Validation", CPU, tta=True), rtol=1e-5, atol=1e-6)
+
+
 def test_estrategias_de_ajuste():
     def entrenables(estrategia, **kw):
         m = A.construir_modelo(A.EspecificacionModelo(**VIT, estrategia_ajuste=estrategia, **kw), 1, 3)
